@@ -1,0 +1,7 @@
+bots:
+  - id: financials-xlf
+    name: "Financials · XLF"
+    base_url: "http://127.0.0.1:8780"
+    signals_path: "/signals"
+    api_key_env: "FINANCIALS_XLF_API_KEY"
+    enabled: true

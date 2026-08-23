@@ -1,0 +1,11 @@
+.env
+config/bots.yaml
+data/
+.netlify
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.DS_Store
