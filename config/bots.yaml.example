@@ -19,3 +19,10 @@ bots:
     signals_path: "/signals"
     api_key_env: "CANDLESTICK_PATTERNS_API_KEY"
     enabled: true
+
+  - id: technology-xlk
+    name: "Technology XLK"
+    base_url: "http://127.0.0.1:8783"
+    signals_path: "/signals"
+    api_key_env: "TECHNOLOGY_XLK_API_KEY"
+    enabled: true
