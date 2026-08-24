@@ -5,3 +5,10 @@ bots:
     signals_path: "/signals"
     api_key_env: "FINANCIALS_XLF_API_KEY"
     enabled: true
+
+  - id: reversal-watchlist
+    name: "Reversal · Crowding"
+    base_url: "http://127.0.0.1:8781"
+    signals_path: "/signals"
+    api_key_env: "REVERSAL_WATCHLIST_API_KEY"
+    enabled: true
