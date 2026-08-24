@@ -28,17 +28,15 @@ fi
 cp config/bots.yaml.example config/bots.yaml
 
 echo ""
-echo "=== Telegram ping ==="
+echo "=== Telegram ping (one-shot test) ==="
 python3 -m src.cli ping
 
 echo ""
-echo "=== Poll Authors + send UPDATE digests to Telegram ==="
-python3 -m src.cli update
-
-echo ""
-echo "=== Install LaunchAgent (keeps Brancher alive every 15 min) ==="
+echo "=== Install LaunchAgent (quiet loop: only texts on real events) ==="
 bash scripts/install_launchagents.sh
 
 echo ""
 echo "Done. Watch logs:"
 echo "  tail -f data/logs/brancher.log"
+echo "On-demand status to Telegram:"
+echo "  python3 -m src.cli update"

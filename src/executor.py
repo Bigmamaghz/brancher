@@ -45,13 +45,13 @@ class Executor:
 
         results = poll_all(bots)
         self._log_poll_errors(results)
-        self._send_bot_updates(results)
+        # Quiet by default: no Telegram unless something actionable changes.
 
         winners, losers = merge_signals(results)
 
-        self._send_skip_for_losers(losers)
+        self._send_skip_for_losers(losers, book)
         self._send_advance_notices(winners, book, today)
-        self._send_enter_today_notices(winners, today)
+        self._send_enter_today_notices(winners, book, today)
         self._process_sells(book, today)
         self._process_enters(winners, book, today)
 
@@ -61,7 +61,7 @@ class Executor:
         save_book(book)
 
     def send_updates_only(self, bots: list[BotConfig] | None = None) -> list[PollResult]:
-        """Poll every Author and Telegram a STATUS UPDATE digest (no trading)."""
+        """On-demand poll + Telegram STATUS digest (python -m src.cli update)."""
         ensure_data_dirs()
         bots = bots or enabled_bots()
         results = poll_all(bots)
@@ -107,9 +107,12 @@ class Executor:
                 dry_run=self.dry_run,
             )
 
-    def _send_skip_for_losers(self, losers: list[SkippedSignal]) -> None:
+    def _send_skip_for_losers(self, losers: list[SkippedSignal], book: Book) -> None:
         for skip in losers:
             sig = skip.signal
+            label = f"skip:beaten:{skip.winner_bot}"
+            if book.notice_already_sent(sig.id, label):
+                continue
             msg = format_message(
                 kind="SKIP",
                 source=skip.bot_name,
@@ -119,6 +122,7 @@ class Executor:
                 dates=format_dates(sig.enter_on, sig.close_on),
             )
             self.telegram.send(msg, dry_run=self.dry_run)
+            book.mark_notice_sent(sig.id, label)
 
     def _send_advance_notices(self, winners: list[MergedSignal], book: Book, today: str) -> None:
         for merged in winners:
@@ -136,18 +140,28 @@ class Executor:
                 self.telegram.send(msg, dry_run=self.dry_run)
                 book.mark_notice_sent(sig.id, label)
 
-    def _send_enter_today_notices(self, winners: list[MergedSignal], today: str) -> None:
+    def _send_enter_today_notices(
+        self,
+        winners: list[MergedSignal],
+        book: Book,
+        today: str,
+    ) -> None:
         for merged in winners:
             sig = merged.signal
-            if is_enter_today(sig.enter_on):
-                msg = format_message(
-                    kind="ADVANCE",
-                    source=merged.bot_name,
-                    signal_line=format_signal_line(sig.ticker, sig.event_type, sig.side, sig.hit),
-                    action="ENTER TODAY",
-                    dates=format_dates(sig.enter_on, sig.close_on),
-                )
-                self.telegram.send(msg, dry_run=self.dry_run)
+            if not is_enter_today(sig.enter_on):
+                continue
+            label = "enter_today"
+            if book.notice_already_sent(sig.id, label):
+                continue
+            msg = format_message(
+                kind="ADVANCE",
+                source=merged.bot_name,
+                signal_line=format_signal_line(sig.ticker, sig.event_type, sig.side, sig.hit),
+                action="ENTER TODAY",
+                dates=format_dates(sig.enter_on, sig.close_on),
+            )
+            self.telegram.send(msg, dry_run=self.dry_run)
+            book.mark_notice_sent(sig.id, label)
 
     def _process_sells(self, book: Book, today: str) -> None:
         to_close = [p for p in book.positions if is_sell_today(p.close_on)]
@@ -171,17 +185,22 @@ class Executor:
             self.telegram.send(msg, dry_run=self.dry_run)
             book.close_position(pos.ticker)
 
-        # SELL TODAY notices for open positions approaching close
+        # SELL TODAY notices for open positions approaching close (once)
         for pos in book.positions:
-            if pos.close_on == today:
-                msg = format_message(
-                    kind="ADVANCE",
-                    source=pos.bot_name,
-                    signal_line=f"{pos.ticker}",
-                    action="SELL TODAY",
-                    dates=f"SELL: {pos.close_on} next session",
-                )
-                self.telegram.send(msg, dry_run=self.dry_run)
+            if pos.close_on != today:
+                continue
+            label = "sell_today"
+            if book.notice_already_sent(pos.signal_id, label):
+                continue
+            msg = format_message(
+                kind="ADVANCE",
+                source=pos.bot_name,
+                signal_line=f"{pos.ticker}",
+                action="SELL TODAY",
+                dates=f"SELL: {pos.close_on} next session",
+            )
+            self.telegram.send(msg, dry_run=self.dry_run)
+            book.mark_notice_sent(pos.signal_id, label)
 
     def _process_enters(
         self,
@@ -199,7 +218,7 @@ class Executor:
 
             skip_reason = check_eligible(sig, self.settings)
             if skip_reason:
-                self._send_skip(merged, skip_reason)
+                self._send_skip_once(merged, book, skip_reason)
                 continue
 
             if not should_enter(merged, today):
@@ -211,7 +230,7 @@ class Executor:
                 self.settings,
             )
             if cap_reason:
-                self._send_skip(merged, cap_reason)
+                self._send_skip_once(merged, book, cap_reason)
                 continue
 
             qty = qty_for_hit(
@@ -221,7 +240,7 @@ class Executor:
                 self.settings.min_hit,
             )
             if qty <= 0:
-                self._send_skip(merged, "qty=0 after sizing")
+                self._send_skip_once(merged, book, "qty=0 after sizing")
                 continue
 
             order_id = "dry-run"
@@ -230,7 +249,7 @@ class Executor:
                     order_id = submit_buy(self.client, sig.ticker, qty)
                 except Exception as exc:
                     logger.error("Buy failed for %s: %s", sig.ticker, exc)
-                    self._send_skip(merged, f"order failed: {exc}")
+                    self._send_skip_once(merged, book, f"order failed: {exc}")
                     continue
 
             position = make_position(
@@ -255,8 +274,11 @@ class Executor:
             )
             self.telegram.send(msg, dry_run=self.dry_run)
 
-    def _send_skip(self, merged: MergedSignal, reason: str) -> None:
+    def _send_skip_once(self, merged: MergedSignal, book: Book, reason: str) -> None:
         sig = merged.signal
+        label = f"skip:{reason}"
+        if book.notice_already_sent(sig.id, label):
+            return
         msg = format_message(
             kind="SKIP",
             source=merged.bot_name,
@@ -265,6 +287,7 @@ class Executor:
             dates=format_dates(sig.enter_on, sig.close_on),
         )
         self.telegram.send(msg, dry_run=self.dry_run)
+        book.mark_notice_sent(sig.id, label)
 
     def _send_eod(
         self,
