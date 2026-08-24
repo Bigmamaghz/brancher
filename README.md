@@ -53,11 +53,26 @@ Add new bots by editing `bots.yaml` and adding the matching `*_API_KEY` to `.env
 
 ## Mac Mini (LaunchAgent)
 
+**One command — paste in Terminal on your Mac Mini:**
+
 ```bash
-bash scripts/install_launchagents.sh
+curl -fsSL https://raw.githubusercontent.com/Bigmamaghz/brancher/main/scripts/setup-mac-mini.sh | bash
 ```
 
+Or if you already have the repo:
+
+```bash
+cd ~/brancher   # or: cd "/Users/josephghouzi/resulter trader"
+bash scripts/setup-mac-mini.sh
+```
+
+Double-click **`Start Brancher.command`** in Finder (same thing).
+
 Runs `python -m src.cli run` at login, keeps alive, logs to `data/logs/brancher.log`.
+
+```bash
+bash scripts/install_launchagents.sh   # LaunchAgent only (if already set up)
+```
 
 ## Data
 
