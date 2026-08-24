@@ -42,6 +42,7 @@ def cmd_ping(args: argparse.Namespace) -> int:
 
 
 def cmd_poll(args: argparse.Namespace) -> int:
+    load_settings()  # load .env so bot API keys resolve
     bots = enabled_bots()
     results = poll_all(bots)
     for r in results:
