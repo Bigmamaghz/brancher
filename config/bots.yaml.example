@@ -8,7 +8,7 @@ bots:
 
   - id: candlestick-patterns
     name: "Candlestick · Pattern Finder"
-    base_url: "http://127.0.0.1:8782"
+    base_url: "http://127.0.0.1:8781"
     signals_path: "/signals"
     api_key_env: "CANDLESTICK_PATTERNS_API_KEY"
     enabled: true
