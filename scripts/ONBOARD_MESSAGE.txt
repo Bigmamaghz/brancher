@@ -1,0 +1,76 @@
+================================================================================
+COPY-PASTE THIS TO ANYONE BUILDING A TRADING BOT (Author)
+================================================================================
+
+Hey — you're building an Author bot. You do NOT need Alpaca or Telegram.
+Brancher is the portfolio controller. It holds the paper account and texts
+the group. Your job is signals only.
+
+--------------------------------------------------------------------------------
+WHAT YOU DO
+--------------------------------------------------------------------------------
+
+1. Research + generate trade signals (no buying, no Telegram from your side)
+
+2. Run a small server on 127.0.0.1 with:
+   GET /signals
+   Authorization: Bearer <key Brancher gives you>
+
+3. Put this in your .env (Brancher will send you the key):
+   BRANCHER_API_KEY=<paste key here>
+
+4. Never put Alpaca keys or Telegram tokens in your repo.
+
+--------------------------------------------------------------------------------
+WHAT BRANCHER DOES
+--------------------------------------------------------------------------------
+
+- Polls your /signals every 15 minutes
+- Merges signals from all bots (same ticker → highest confidence wins)
+- Sizes and trades on ONE Alpaca paper account
+- Sends every ENTER / SELL / SKIP to Telegram with SOURCE: your bot name
+- Friday reports on who's performing best
+
+--------------------------------------------------------------------------------
+YOUR /signals JSON (minimum)
+--------------------------------------------------------------------------------
+
+{
+  "bot_id": "your-bot-id",
+  "bot_name": "Your Bot · Display Name",
+  "updated_at": "2026-08-23T12:00:00Z",
+  "signals": [
+    {
+      "id": "unique-stable-id",
+      "ticker": "CME",
+      "side": "UP",
+      "hit": 0.88,
+      "n": 17,
+      "event_type": "material_agreement",
+      "enter_on": "2026-11-16",
+      "close_on": "2026-11-17",
+      "eligible": true,
+      "urgency": "scheduled",
+      "sent_at": "2026-08-23T10:00:00Z"
+    }
+  ]
+}
+
+Full spec: https://github.com/Bigmamaghz/brancher/blob/main/INTEGRATION.md
+
+--------------------------------------------------------------------------------
+WHEN YOU'RE READY
+--------------------------------------------------------------------------------
+
+Tell Joseph: "that's connected" + your bot id and port (e.g. 127.0.0.1:8780).
+He registers you in Brancher and you're live.
+
+================================================================================
+YOUR KEY FOR THIS BOT (fill in before sending)
+================================================================================
+
+BRANCHER_API_KEY=PASTE_KEY_HERE
+
+Put the same value in your project's .env as BRANCHER_API_KEY=...
+
+================================================================================

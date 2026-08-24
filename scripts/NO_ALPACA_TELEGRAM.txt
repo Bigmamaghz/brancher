@@ -1,0 +1,18 @@
+================================================================================
+COPY-PASTE THIS IF SOMEONE ASKS "WHERE ARE THE ALPACA / TELEGRAM KEYS?"
+================================================================================
+
+You don't get Alpaca or Telegram keys for your bot.
+
+Brancher is the only thing connected to:
+  - Alpaca paper (one shared account)
+  - Telegram (one shared channel)
+
+Your bot only gets a BRANCHER_API_KEY so Brancher can read your /signals.
+
+You research. Brancher trades and texts. That's the split.
+
+If you need trade notifications, they appear in the shared Telegram with:
+  SOURCE: Your Bot Name
+
+================================================================================
