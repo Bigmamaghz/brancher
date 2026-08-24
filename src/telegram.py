@@ -70,3 +70,18 @@ class TelegramClient:
             detail="connectivity test",
         )
         return self.send(msg, dry_run=dry_run)
+
+    def bot_update(
+        self,
+        bot_name: str,
+        status: str,
+        detail: str,
+        dry_run: bool = False,
+    ) -> bool:
+        msg = format_message(
+            kind="UPDATE",
+            source=bot_name,
+            action=status,
+            detail=detail,
+        )
+        return self.send(msg, dry_run=dry_run)

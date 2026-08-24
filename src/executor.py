@@ -45,6 +45,7 @@ class Executor:
 
         results = poll_all(bots)
         self._log_poll_errors(results)
+        self._send_bot_updates(results)
 
         winners, losers = merge_signals(results)
 
@@ -59,10 +60,52 @@ class Executor:
 
         save_book(book)
 
+    def send_updates_only(self, bots: list[BotConfig] | None = None) -> list[PollResult]:
+        """Poll every Author and Telegram a STATUS UPDATE digest (no trading)."""
+        ensure_data_dirs()
+        bots = bots or enabled_bots()
+        results = poll_all(bots)
+        self._log_poll_errors(results)
+        self._send_bot_updates(results)
+        return results
+
     def _log_poll_errors(self, results: list[PollResult]) -> None:
         for r in results:
             if r.error:
                 logger.warning("Poll error for %s: %s", r.bot_id, r.error)
+
+    def _send_bot_updates(self, results: list[PollResult]) -> None:
+        today = today_et_str()
+        for r in results:
+            if r.error:
+                self.telegram.bot_update(
+                    bot_name=r.bot_name or r.bot_id,
+                    status="offline / poll failed",
+                    detail=r.error[:200],
+                    dry_run=self.dry_run,
+                )
+                continue
+
+            signals = r.signals
+            soon = [s for s in signals if s.urgency in ("soon", "in_play") or s.enter_on == today]
+            upcoming = sorted(
+                [s for s in signals if s.eligible],
+                key=lambda s: (-s.hit, s.enter_on),
+            )[:5]
+            top = ", ".join(
+                f"{s.ticker} {int(round(s.hit * 100))}% enter={s.enter_on}"
+                for s in upcoming
+            ) or "none"
+            detail = (
+                f"signals={len(signals)} soon/in_play/today={len(soon)} "
+                f"top=[{top}]"
+            )
+            self.telegram.bot_update(
+                bot_name=r.bot_name or r.bot_id,
+                status=f"online · {len(signals)} signals",
+                detail=detail,
+                dry_run=self.dry_run,
+            )
 
     def _send_skip_for_losers(self, losers: list[SkippedSignal]) -> None:
         for skip in losers:

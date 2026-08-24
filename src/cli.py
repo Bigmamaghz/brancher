@@ -53,6 +53,20 @@ def cmd_poll(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Poll all Authors and Telegram you a per-bot UPDATE digest."""
+    settings = load_settings()
+    executor = Executor(settings, dry_run=args.dry_run)
+    results = executor.send_updates_only()
+    for r in results:
+        status = "error" if r.error else f"{len(r.signals)} signals"
+        print(f"  {r.bot_id}: {status}")
+        if r.error:
+            print(f"    {r.error}")
+    print("updates sent to Telegram" if any(not r.error for r in results) or results else "done")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     settings = load_settings()
     executor = Executor(settings, dry_run=True)
@@ -89,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("poll", help="Poll all bots once").set_defaults(func=cmd_poll)
     sub.add_parser("status", help="Show portfolio status").set_defaults(func=cmd_status)
+
+    update_p = sub.add_parser("update", help="Poll Authors and Telegram status updates")
+    update_p.add_argument("--dry-run", action="store_true")
+    update_p.set_defaults(func=cmd_update)
 
     ping_p = sub.add_parser("ping", help="Send test Telegram message")
     ping_p.add_argument("--dry-run", action="store_true")
