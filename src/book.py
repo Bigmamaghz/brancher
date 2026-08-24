@@ -34,6 +34,8 @@ class Book:
     opens_today: dict[str, int] = field(default_factory=dict)
     notices_sent: dict[str, list[str]] = field(default_factory=dict)
     eod_sent: dict[str, bool] = field(default_factory=dict)
+    signal_snapshots: dict[str, dict[str, dict]] = field(default_factory=dict)
+    bot_online: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Book:
@@ -42,6 +44,8 @@ class Book:
             opens_today=d.get("opens_today", {}),
             notices_sent=d.get("notices_sent", {}),
             eod_sent=d.get("eod_sent", {}),
+            signal_snapshots=d.get("signal_snapshots", {}),
+            bot_online=d.get("bot_online", {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +54,8 @@ class Book:
             "opens_today": self.opens_today,
             "notices_sent": self.notices_sent,
             "eod_sent": self.eod_sent,
+            "signal_snapshots": self.signal_snapshots,
+            "bot_online": self.bot_online,
         }
 
     def open_tickers(self) -> set[str]:

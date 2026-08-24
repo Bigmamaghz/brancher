@@ -7,6 +7,7 @@ from src.alpaca import get_equity, get_open_positions, get_trading_client, submi
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
 from src.merge import MergedSignal, SkippedSignal, merge_signals
+from src.news import NewsItem, detect_news
 from src.poll import PollResult, poll_all
 from src.registry import BotConfig, enabled_bots
 from src.risk import can_open_position, check_eligible, should_enter
@@ -45,20 +46,58 @@ class Executor:
 
         results = poll_all(bots)
         self._log_poll_errors(results)
-        # Quiet by default: no Telegram unless something actionable changes.
 
-        winners, losers = merge_signals(results)
+        if self.settings.telegram_news_only:
+            news, book.signal_snapshots, book.bot_online = detect_news(
+                results,
+                book.signal_snapshots,
+                book.bot_online,
+                self.settings.min_hit,
+            )
+            self._send_news(news, book)
+        else:
+            winners, losers = merge_signals(results)
+            self._send_skip_for_losers(losers, book)
+            self._send_advance_notices(winners, book, today)
+            self._send_enter_today_notices(winners, book, today)
 
-        self._send_skip_for_losers(losers, book)
-        self._send_advance_notices(winners, book, today)
-        self._send_enter_today_notices(winners, book, today)
+        winners, _ = merge_signals(results)
         self._process_sells(book, today)
         self._process_enters(winners, book, today)
 
-        if is_eod_time() and not book.eod_already_sent(today):
+        if (
+            self.settings.telegram_eod
+            and is_eod_time()
+            and not book.eod_already_sent(today)
+        ):
             self._send_eod(book, results, today)
 
         save_book(book)
+
+    def _send_news(self, items: list[NewsItem], book: Book) -> None:
+        for item in items:
+            label = f"news:{item.kind}:{item.signal.id if item.signal else item.bot_id}"
+            if book.notice_already_sent(label, "sent"):
+                continue
+            if item.signal:
+                sig = item.signal
+                msg = format_message(
+                    kind="NEWS",
+                    source=item.bot_name,
+                    signal_line=format_signal_line(
+                        sig.ticker, sig.event_type, sig.side, sig.hit
+                    ),
+                    action=f"{item.kind} · {item.detail}",
+                    dates=format_dates(sig.enter_on, sig.close_on),
+                )
+            else:
+                msg = format_message(
+                    kind="NEWS",
+                    source=item.bot_name,
+                    action=f"{item.kind} · {item.detail}",
+                )
+            self.telegram.send(msg, dry_run=self.dry_run)
+            book.mark_notice_sent(label, "sent")
 
     def send_updates_only(self, bots: list[BotConfig] | None = None) -> list[PollResult]:
         """On-demand poll + Telegram STATUS digest (python -m src.cli update)."""
@@ -185,7 +224,9 @@ class Executor:
             self.telegram.send(msg, dry_run=self.dry_run)
             book.close_position(pos.ticker)
 
-        # SELL TODAY notices for open positions approaching close (once)
+        # SELL TODAY — news mode only if closing today (handled by SELL above)
+        if self.settings.telegram_news_only:
+            return
         for pos in book.positions:
             if pos.close_on != today:
                 continue
@@ -218,7 +259,8 @@ class Executor:
 
             skip_reason = check_eligible(sig, self.settings)
             if skip_reason:
-                self._send_skip_once(merged, book, skip_reason)
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, skip_reason)
                 continue
 
             if not should_enter(merged, today):
@@ -230,7 +272,8 @@ class Executor:
                 self.settings,
             )
             if cap_reason:
-                self._send_skip_once(merged, book, cap_reason)
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, cap_reason)
                 continue
 
             qty = qty_for_hit(
@@ -240,7 +283,8 @@ class Executor:
                 self.settings.min_hit,
             )
             if qty <= 0:
-                self._send_skip_once(merged, book, "qty=0 after sizing")
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, "qty=0 after sizing")
                 continue
 
             order_id = "dry-run"
@@ -249,7 +293,8 @@ class Executor:
                     order_id = submit_buy(self.client, sig.ticker, qty)
                 except Exception as exc:
                     logger.error("Buy failed for %s: %s", sig.ticker, exc)
-                    self._send_skip_once(merged, book, f"order failed: {exc}")
+                    if not self.settings.telegram_news_only:
+                        self._send_skip_once(merged, book, f"order failed: {exc}")
                     continue
 
             position = make_position(
