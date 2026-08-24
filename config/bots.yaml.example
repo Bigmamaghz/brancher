@@ -12,3 +12,10 @@ bots:
     signals_path: "/signals"
     api_key_env: "REVERSAL_WATCHLIST_API_KEY"
     enabled: true
+
+  - id: candlestick-patterns
+    name: "Candlestick · Pattern Finder"
+    base_url: "http://127.0.0.1:8782"
+    signals_path: "/signals"
+    api_key_env: "CANDLESTICK_PATTERNS_API_KEY"
+    enabled: true
