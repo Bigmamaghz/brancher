@@ -4,8 +4,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLIST_NAME="com.bigmamaghz.brancher.plist"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME"
-VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python3"
 
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+fi
 if [[ ! -x "$VENV_PYTHON" ]]; then
   VENV_PYTHON="$(command -v python3)"
 fi

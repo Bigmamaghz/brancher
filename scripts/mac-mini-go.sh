@@ -2,7 +2,7 @@
 # Exact Mac Mini commands — copy/paste this whole block into Terminal.
 set -euo pipefail
 
-cd "$HOME/brancher" 2>/dev/null || cd "/Users/josephghouzi/brancher" 2>/dev/null || {
+cd "$HOME/brancher" 2>/dev/null || cd "/Users/josephmini/brancher" 2>/dev/null || {
   echo "Repo not found. Clone first:"
   echo "  git clone https://github.com/Bigmamaghz/brancher.git ~/brancher"
   exit 1
@@ -12,8 +12,9 @@ echo "Repo: $(pwd)"
 git pull
 
 python3 -m venv .venv
+# shellcheck disable=SC1091
 source .venv/bin/activate
-pip install -e ".[dev]" -q
+bash scripts/install-deps.sh
 
 # Keep your filled .env; only create if missing
 if [[ ! -f .env ]]; then
@@ -23,7 +24,7 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-# Sync bot registry (does not overwrite if you already customized)
+# Sync bot registry
 cp config/bots.yaml.example config/bots.yaml
 
 echo ""

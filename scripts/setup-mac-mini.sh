@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_CANDIDATES=(
   "$(cd "$(dirname "$0")/.." && pwd)"
   "$HOME/brancher"
+  "/Users/josephmini/brancher"
   "$HOME/resulter trader"
   "/Users/josephghouzi/resulter trader"
   "/Users/josephghouzi/brancher"
@@ -35,8 +36,9 @@ if ! command -v python3 >/dev/null; then
 fi
 
 python3 -m venv .venv
+# shellcheck disable=SC1091
 source .venv/bin/activate
-pip install -e ".[dev]" -q
+bash scripts/install-deps.sh
 
 mkdir -p data/logs config
 cp -n config/bots.yaml.example config/bots.yaml 2>/dev/null || true
@@ -51,7 +53,11 @@ fi
 
 echo ""
 echo "Testing Telegram ..."
-python -m src.cli ping
+python3 -m src.cli ping
+
+echo ""
+echo "Polling Authors + Telegram updates ..."
+python3 -m src.cli update || true
 
 echo ""
 echo "Installing LaunchAgent (runs at login, keeps alive) ..."
@@ -64,5 +70,5 @@ echo "============================================"
 echo "  Logs:  tail -f $REPO_ROOT/data/logs/brancher.log"
 echo "  Stop:  launchctl stop com.bigmamaghz.brancher"
 echo "  Start: launchctl start com.bigmamaghz.brancher"
-echo "  Status: python -m src.cli status"
+echo "  Status: python3 -m src.cli status"
 echo "============================================"
