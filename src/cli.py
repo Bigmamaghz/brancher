@@ -68,7 +68,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Show which Authors are OK vs FAIL (no Telegram spam)."""
+    """Show which Authors are OK vs FAIL, then scan localhost for real ports."""
     load_settings()
     bots = enabled_bots()
     results = poll_all(bots)
@@ -86,10 +86,42 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             failed += 1
             print(f"  FAIL {row['bot_name']:30} {row['error']}")
     print("-" * 60)
+
+    # Built-in discovery (same machine terminal)
+    from src.discover import discover, format_discovery_report
+    from src.registry import load_bots as all_bots
+
+    probes = discover(bots=all_bots())
+    print(format_discovery_report(probes, all_bots()))
+
     if failed:
-        print(f"{failed} Author(s) FAILING — fix their server/port/key, then re-run doctor.")
+        print(f"{failed} Author(s) FAILING.")
+        print("Run:  python3 -m src.cli find --fix   # auto-remap ports if Authors are on wrong ports")
         return 1
     print("All Authors OK.")
+    return 0
+
+
+def cmd_find(args: argparse.Namespace) -> int:
+    """Scan 127.0.0.1 ports, identify Authors, optionally rewrite bots.yaml."""
+    load_settings()
+    from src.discover import apply_discovered_ports, discover, format_discovery_report
+    from src.registry import load_bots
+
+    bots = load_bots()
+    probes = discover(bots=bots)
+    print(format_discovery_report(probes, bots))
+
+    if args.fix:
+        changes = apply_discovered_ports(probes)
+        if changes:
+            print("Applied fixes to config/bots.yaml:")
+            for c in changes:
+                print(f"  {c}")
+            print("Re-run: python3 -m src.cli doctor")
+        else:
+            print("No auto-fix available — missing Authors are not listening on this Mac.")
+            return 1
     return 0
 
 
@@ -129,7 +161,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("poll", help="Poll all bots once").set_defaults(func=cmd_poll)
     sub.add_parser("status", help="Show portfolio status").set_defaults(func=cmd_status)
-    sub.add_parser("doctor", help="Show which Authors are OK vs FAIL").set_defaults(func=cmd_doctor)
+    sub.add_parser("doctor", help="Show which Authors are OK vs FAIL + scan ports").set_defaults(func=cmd_doctor)
+
+    find_p = sub.add_parser("find", help="Scan localhost ports and identify Authors")
+    find_p.add_argument("--fix", action="store_true", help="Rewrite bots.yaml to match discovered ports")
+    find_p.set_defaults(func=cmd_find)
 
     update_p = sub.add_parser("update", help="Poll Authors and Telegram status updates (manual only)")
     update_p.add_argument("--dry-run", action="store_true")
