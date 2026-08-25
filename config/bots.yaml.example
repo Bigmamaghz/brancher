@@ -4,7 +4,7 @@ bots:
     base_url: "http://127.0.0.1:8780"
     signals_path: "/signals"
     api_key_env: "FINANCIALS_XLF_API_KEY"
-    enabled: true
+    enabled: false  # paused until /signals on 8780 is stable
 
   - id: candlestick-patterns
     name: "Candlestick · Pattern Finder"
