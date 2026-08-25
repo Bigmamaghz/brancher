@@ -35,6 +35,7 @@ class Settings:
     min_hit: float
     telegram_news_only: bool
     telegram_eod: bool
+    telegram_trades_only: bool
 
 
 def _validate_paper_url(url: str | None) -> str | None:
@@ -74,6 +75,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         min_hit=float(os.getenv("MIN_HIT", "0.75")),
         telegram_news_only=os.getenv("TELEGRAM_NEWS_ONLY", "1").lower() in ("1", "true", "yes"),
         telegram_eod=os.getenv("TELEGRAM_EOD", "0").lower() in ("1", "true", "yes"),
+        # Trades only (ENTER/SELL) — quietest mode. Default ON.
+        telegram_trades_only=os.getenv("TELEGRAM_TRADES_ONLY", "1").lower() in ("1", "true", "yes"),
     )
 
 

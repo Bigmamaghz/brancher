@@ -67,6 +67,32 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Show which Authors are OK vs FAIL (no Telegram spam)."""
+    load_settings()
+    bots = enabled_bots()
+    results = poll_all(bots)
+    from src.news import summarize_health
+
+    rows = summarize_health(results)
+    print("")
+    print("Brancher doctor — Author health")
+    print("-" * 60)
+    failed = 0
+    for row in rows:
+        if row["ok"]:
+            print(f"  OK   {row['bot_name']:30} {row['signals']} signals")
+        else:
+            failed += 1
+            print(f"  FAIL {row['bot_name']:30} {row['error']}")
+    print("-" * 60)
+    if failed:
+        print(f"{failed} Author(s) FAILING — fix their server/port/key, then re-run doctor.")
+        return 1
+    print("All Authors OK.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     settings = load_settings()
     executor = Executor(settings, dry_run=True)
@@ -103,8 +129,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("poll", help="Poll all bots once").set_defaults(func=cmd_poll)
     sub.add_parser("status", help="Show portfolio status").set_defaults(func=cmd_status)
+    sub.add_parser("doctor", help="Show which Authors are OK vs FAIL").set_defaults(func=cmd_doctor)
 
-    update_p = sub.add_parser("update", help="Poll Authors and Telegram status updates")
+    update_p = sub.add_parser("update", help="Poll Authors and Telegram status updates (manual only)")
     update_p.add_argument("--dry-run", action="store_true")
     update_p.set_defaults(func=cmd_update)
 

@@ -7,7 +7,7 @@ from src.alpaca import get_equity, get_open_positions, get_trading_client, submi
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
 from src.merge import MergedSignal, SkippedSignal, merge_signals
-from src.news import NewsItem, detect_news
+from src.news import NewsItem, detect_news, summarize_health
 from src.poll import PollResult, poll_all
 from src.registry import BotConfig, enabled_bots
 from src.risk import can_open_position, check_eligible, should_enter
@@ -47,19 +47,24 @@ class Executor:
         results = poll_all(bots)
         self._log_poll_errors(results)
 
-        if self.settings.telegram_news_only:
-            news, book.signal_snapshots, book.bot_online = detect_news(
-                results,
-                book.signal_snapshots,
-                book.bot_online,
-                self.settings.min_hit,
-            )
-            self._send_news(news, book)
-        else:
-            winners, losers = merge_signals(results)
-            self._send_skip_for_losers(losers, book)
-            self._send_advance_notices(winners, book, today)
-            self._send_enter_today_notices(winners, book, today)
+        # Always refresh snapshots (silent) so we don't re-notify later
+        news, book.signal_snapshots, book.bot_online = detect_news(
+            results,
+            book.signal_snapshots,
+            book.bot_online,
+            self.settings.min_hit,
+        )
+
+        # Quiet default: Telegram only for real ENTER/SELL trades.
+        # NEWS texts only if trades_only is off and news_only is on.
+        if not self.settings.telegram_trades_only:
+            if self.settings.telegram_news_only:
+                self._send_news(news, book)
+            else:
+                winners, losers = merge_signals(results)
+                self._send_skip_for_losers(losers, book)
+                self._send_advance_notices(winners, book, today)
+                self._send_enter_today_notices(winners, book, today)
 
         winners, _ = merge_signals(results)
         self._process_sells(book, today)
@@ -371,6 +376,13 @@ class Executor:
         )
         self.telegram.send(msg, dry_run=self.dry_run)
         book.mark_eod_sent(today)
+
+    def doctor(self) -> list[dict]:
+        """Poll every Author and return OK/FAIL rows (no Telegram)."""
+        ensure_data_dirs()
+        bots = enabled_bots()
+        results = poll_all(bots)
+        return summarize_health(results)
 
     def status(self) -> dict:
         book = load_book()

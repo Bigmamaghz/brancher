@@ -33,7 +33,18 @@ def test_bootstrap_no_new_spam():
 
 
 def test_detects_new_signal_after_bootstrap():
-    prior = {"bot-a": {"1": {"hit": 0.88, "urgency": "scheduled", "eligible": True, "enter_on": "2026-12-01", "ticker": "CME", "event_type": "test"}}}
+    prior = {
+        "bot-a": {
+            "1": {
+                "hit": 0.88,
+                "urgency": "scheduled",
+                "eligible": True,
+                "enter_on": "2026-12-01",
+                "ticker": "CME",
+                "event_type": "test",
+            }
+        }
+    }
     results = [
         PollResult(
             bot_id="bot-a",
@@ -46,3 +57,18 @@ def test_detects_new_signal_after_bootstrap():
     kinds = [n.kind for n in news]
     assert "NEW" in kinds
     assert any(n.signal and n.signal.ticker == "JPM" for n in news)
+
+
+def test_offline_does_not_create_news():
+    results = [
+        PollResult(
+            bot_id="bot-a",
+            bot_name="Bot A",
+            updated_at="",
+            signals=[],
+            error="Connection refused",
+        )
+    ]
+    news, _, online = detect_news(results, {}, {"bot-a": True}, min_hit=0.75)
+    assert news == []
+    assert online["bot-a"] is False

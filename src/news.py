@@ -35,39 +35,25 @@ def detect_news(
     prior_online: dict[str, bool],
     min_hit: float,
 ) -> tuple[list[NewsItem], dict[str, dict[str, dict]], dict[str, bool]]:
-    """Compare poll to prior snapshot; return news + updated snapshot."""
+    """Compare poll to prior snapshot; return news + updated snapshot.
+
+    Offline/online status is tracked but NOT emitted as news items — use
+    ``cli doctor`` / daily fail digest for that. News items are only
+    real signal changes (NEW, URGENCY, HIT_UP, ELIGIBLE, ENTER_TODAY).
+    """
     news: list[NewsItem] = []
     today = today_et_str()
     new_snap: dict[str, dict[str, dict]] = {}
     new_online: dict[str, bool] = {}
 
     for r in results:
-        was_online = prior_online.get(r.bot_id, False)
         new_online[r.bot_id] = r.error is None
 
         if r.error:
-            if was_online:
-                news.append(
-                    NewsItem(
-                        bot_id=r.bot_id,
-                        bot_name=r.bot_name or r.bot_id,
-                        kind="OFFLINE",
-                        signal=None,
-                        detail=r.error[:200],
-                    )
-                )
+            # Keep prior snapshot if any; do not spam OFFLINE texts
+            if r.bot_id in prior:
+                new_snap[r.bot_id] = prior[r.bot_id]
             continue
-
-        if not was_online and r.bot_id in prior_online:
-            news.append(
-                NewsItem(
-                    bot_id=r.bot_id,
-                    bot_name=r.bot_name or r.bot_id,
-                    kind="ONLINE",
-                    signal=None,
-                    detail=f"back online · {len(r.signals)} signals",
-                )
-            )
 
         prev_bot = prior.get(r.bot_id, {})
         bot_snap: dict[str, dict] = {}
@@ -75,7 +61,7 @@ def detect_news(
         for sig in r.signals:
             bot_snap[sig.id] = _snapshot(sig)
 
-        # First poll for this bot: seed snapshot silently (no 500 "NEW" texts).
+        # First poll for this bot: seed snapshot silently
         if not prev_bot:
             new_snap[r.bot_id] = bot_snap
             continue
@@ -146,3 +132,19 @@ def detect_news(
         new_snap[r.bot_id] = bot_snap
 
     return news, new_snap, new_online
+
+
+def summarize_health(results: list[PollResult]) -> list[dict]:
+    """Return a simple OK/FAIL table for each Author."""
+    rows = []
+    for r in results:
+        rows.append(
+            {
+                "bot_id": r.bot_id,
+                "bot_name": r.bot_name or r.bot_id,
+                "ok": r.error is None,
+                "signals": len(r.signals) if not r.error else 0,
+                "error": r.error or "",
+            }
+        )
+    return rows
