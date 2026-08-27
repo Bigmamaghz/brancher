@@ -75,8 +75,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         min_hit=float(os.getenv("MIN_HIT", "0.75")),
         telegram_news_only=os.getenv("TELEGRAM_NEWS_ONLY", "1").lower() in ("1", "true", "yes"),
         telegram_eod=os.getenv("TELEGRAM_EOD", "0").lower() in ("1", "true", "yes"),
-        # Trades only (ENTER/SELL) — quietest mode. Default ON.
-        telegram_trades_only=os.getenv("TELEGRAM_TRADES_ONLY", "1").lower() in ("1", "true", "yes"),
+        # If 1: only ENTER/SELL (no NEWS). Default 0 so NEWS + trades both send.
+        telegram_trades_only=os.getenv("TELEGRAM_TRADES_ONLY", "0").lower() in ("1", "true", "yes"),
     )
 
 

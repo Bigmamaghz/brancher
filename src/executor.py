@@ -55,16 +55,17 @@ class Executor:
             self.settings.min_hit,
         )
 
-        # Quiet default: Telegram only for real ENTER/SELL trades.
-        # NEWS texts only if trades_only is off and news_only is on.
-        if not self.settings.telegram_trades_only:
-            if self.settings.telegram_news_only:
-                self._send_news(news, book)
-            else:
-                winners, losers = merge_signals(results)
-                self._send_skip_for_losers(losers, book)
-                self._send_advance_notices(winners, book, today)
-                self._send_enter_today_notices(winners, book, today)
+        # Quiet modes — never spam status/FAIL/UPDATE/SKIP/ADVANCE on a timer.
+        # NEWS = real signal changes only (NEW / URGENCY / HIT_UP / ENTER_TODAY).
+        # ENTER/SELL always text (actual paper trades).
+        if self.settings.telegram_news_only and not self.settings.telegram_trades_only:
+            self._send_news(news, book)
+        elif not self.settings.telegram_news_only and not self.settings.telegram_trades_only:
+            # Legacy noisy mode (explicitly opt-in by setting both flags to 0)
+            winners, losers = merge_signals(results)
+            self._send_skip_for_losers(losers, book)
+            self._send_advance_notices(winners, book, today)
+            self._send_enter_today_notices(winners, book, today)
 
         winners, _ = merge_signals(results)
         self._process_sells(book, today)
