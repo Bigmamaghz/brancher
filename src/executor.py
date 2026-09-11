@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-from src.alpaca import get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
+from src.alpaca import cancel_open_orders, get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
 from src.merge import MergedSignal, SkippedSignal, merge_signals
@@ -216,8 +216,23 @@ class Executor:
                 try:
                     order_id = submit_sell(self.client, pos.ticker, pos.qty)
                 except Exception as exc:
-                    logger.error("Sell failed for %s: %s", pos.ticker, exc)
-                    continue
+                    # Wash-trade guard: an unfilled opposite-side order blocks the sell.
+                    # Cancel open orders for the symbol and retry once.
+                    if "wash trade" in str(exc) or "40310000" in str(exc):
+                        cancelled = cancel_open_orders(self.client, pos.ticker)
+                        if cancelled:
+                            try:
+                                order_id = submit_sell(self.client, pos.ticker, pos.qty)
+                                logger.info("Sell for %s succeeded after cancelling %d open order(s)", pos.ticker, cancelled)
+                            except Exception as exc2:
+                                logger.error("Sell retry failed for %s: %s", pos.ticker, exc2)
+                                continue
+                        else:
+                            logger.error("Sell failed for %s: %s", pos.ticker, exc)
+                            continue
+                    else:
+                        logger.error("Sell failed for %s: %s", pos.ticker, exc)
+                        continue
 
             msg = format_message(
                 kind="SELL",

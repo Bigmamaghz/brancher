@@ -30,7 +30,12 @@ def can_open_position(
 
 def should_enter(merged: MergedSignal, today_str: str) -> bool:
     sig = merged.signal
-    if sig.urgency in ("in_play", "soon"):
+    from src.schedule import parse_date
+    # Stale-window guard: never enter a signal whose entry date already passed.
+    # Overdue signals forced buy-at-open + immediate sell (slippage, no edge).
+    if parse_date(sig.enter_on) < parse_date(today_str):
+        return False
+    if sig.urgency in ("in_play", "soon") and parse_date(sig.enter_on) <= parse_date(today_str):
         return True
     if sig.enter_on == today_str:
         return True

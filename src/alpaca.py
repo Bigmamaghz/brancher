@@ -47,6 +47,20 @@ def submit_sell(client, symbol: str, qty: int) -> str:
     return str(order.id)
 
 
+def cancel_open_orders(client, symbol: str) -> int:
+    """Cancel open (unfilled) orders for symbol. Returns count cancelled."""
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    n = 0
+    try:
+        for o in client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])):
+            client.cancel_order(o.id)
+            n += 1
+    except Exception:
+        pass
+    return n
+
+
 def get_equity(client) -> float:
     account = client.get_account()
     return float(account.equity)
