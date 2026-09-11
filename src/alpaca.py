@@ -69,3 +69,10 @@ def get_equity(client) -> float:
 def get_open_positions(client) -> dict[str, int]:
     positions = client.get_all_positions()
     return {p.symbol: int(float(p.qty)) for p in positions}
+
+def get_position_entry_price(client, symbol: str) -> float | None:
+    """Return avg entry price for an open paper position, else None."""
+    for p in client.get_all_positions():
+        if p.symbol == symbol:
+            return float(p.avg_entry_price)
+    return None

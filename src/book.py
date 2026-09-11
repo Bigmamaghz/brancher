@@ -36,6 +36,7 @@ class Book:
     eod_sent: dict[str, bool] = field(default_factory=dict)
     signal_snapshots: dict[str, dict[str, dict]] = field(default_factory=dict)
     bot_online: dict[str, bool] = field(default_factory=dict)
+    closed: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Book:
@@ -46,6 +47,7 @@ class Book:
             eod_sent=d.get("eod_sent", {}),
             signal_snapshots=d.get("signal_snapshots", {}),
             bot_online=d.get("bot_online", {}),
+            closed=list(d.get("closed", [])),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +58,7 @@ class Book:
             "eod_sent": self.eod_sent,
             "signal_snapshots": self.signal_snapshots,
             "bot_online": self.bot_online,
+            "closed": self.closed,
         }
 
     def open_tickers(self) -> set[str]:
@@ -73,6 +76,9 @@ class Book:
             if p.ticker == ticker:
                 return self.positions.pop(i)
         return None
+
+    def record_closed(self, rec: dict[str, Any]) -> None:
+        self.closed.append(rec)
 
     def notice_already_sent(self, signal_id: str, label: str) -> bool:
         return label in self.notices_sent.get(signal_id, [])

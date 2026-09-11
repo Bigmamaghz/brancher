@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from collections import defaultdict
 
 from src.alpaca import cancel_open_orders, get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
@@ -11,6 +12,7 @@ from src.news import NewsItem, detect_news, summarize_health
 from src.poll import PollResult, poll_all
 from src.registry import BotConfig, enabled_bots
 from src.risk import can_open_position, check_eligible, should_enter
+from src.shadow import bench_reason, record_closed
 from src.schedule import (
     is_eod_time,
     is_enter_today,
@@ -211,6 +213,14 @@ class Executor:
     def _process_sells(self, book: Book, today: str) -> None:
         to_close = [p for p in book.positions if is_sell_today(p.close_on)]
         for pos in to_close:
+            entry_px = None
+            exit_px = None
+            if self.client:
+                try:
+                    from src.alpaca import get_position_entry_price
+                    entry_px = get_position_entry_price(self.client, pos.ticker)
+                except Exception:
+                    pass
             order_id = "dry-run"
             if self.client:
                 try:
@@ -243,6 +253,20 @@ class Executor:
                 dates=f"SELL: {pos.close_on} next session",
             )
             self.telegram.send(msg, dry_run=self.dry_run)
+            if self.client:
+                try:
+                    from alpaca.trading.requests import GetOrdersRequest
+                    from alpaca.trading.enums import QueryOrderStatus
+                    for o in self.client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[pos.ticker], limit=5)):
+                        if o.side.value == "sell" and o.filled_avg_price:
+                            exit_px = float(o.filled_avg_price)
+                            break
+                except Exception:
+                    exit_px = None
+            from src.shadow import record_closed
+            record_closed(book, pos.ticker, pos.bot_id, pos.signal_id, pos.enter_on,
+                          pos.close_on, entry_px, exit_px,
+                          datetime.now(timezone.utc).isoformat())
             book.close_position(pos.ticker)
 
         # SELL TODAY — news mode only if closing today (handled by SELL above)
@@ -276,6 +300,13 @@ class Executor:
             sig = merged.signal
 
             if sig.ticker in open_tickers:
+                continue
+
+            from src.shadow import bench_reason
+            bench = bench_reason(book, sig.id)
+            if bench:
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, bench)
                 continue
 
             skip_reason = check_eligible(sig, self.settings)
