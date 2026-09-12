@@ -36,6 +36,7 @@ class Settings:
     telegram_news_only: bool
     telegram_eod: bool
     telegram_trades_only: bool
+    joe_veto: bool
 
 
 def _validate_paper_url(url: str | None) -> str | None:
@@ -77,6 +78,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         telegram_eod=os.getenv("TELEGRAM_EOD", "0").lower() in ("1", "true", "yes"),
         # If 1: only ENTER/SELL (no NEWS). Default 0 so NEWS + trades both send.
         telegram_trades_only=os.getenv("TELEGRAM_TRADES_ONLY", "0").lower() in ("1", "true", "yes"),
+        joe_veto=os.getenv("JOE_VETO", "1").lower() in ("1", "true", "yes"),
     )
 
 

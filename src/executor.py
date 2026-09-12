@@ -318,6 +318,18 @@ class Executor:
             if not should_enter(merged, today):
                 continue
 
+            # joe's gate (paper veto) — only reached after every hard rule passed.
+            # joe is research-only: he never orders, never texts. Infra failure
+            # inside joe_check fails open; the stack never stalls on joe.
+            if self.settings.joe_veto:
+                from src.joe_gate import joe_check
+                allow, jreason = joe_check(sig)
+                if not allow:
+                    logger.info("joe veto %s: %s", sig.id, jreason)
+                    if not self.settings.telegram_news_only:
+                        self._send_skip_once(merged, book, f"joe: {jreason}")
+                    continue
+
             cap_reason = can_open_position(
                 len(book.positions),
                 book.opens_today_count(today),
