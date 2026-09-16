@@ -12,6 +12,7 @@ from src.news import NewsItem, detect_news, summarize_health
 from src.poll import PollResult, poll_all
 from src.registry import BotConfig, enabled_bots
 from src.risk import can_open_position, check_eligible, should_enter
+from src.research_feedback import feedback_report
 from src.shadow import bench_reason, record_closed
 from src.schedule import (
     is_eod_time,
@@ -424,7 +425,8 @@ class Executor:
 
         detail = (
             f"equity=${equity:,.2f} opened={opened_today} "
-            f"open={len(open_positions)} bots=[{bot_lines}]"
+            f"open={len(open_positions)} bots=[{bot_lines}] "
+            f"research_feedback={feedback_report()['count']}"
         )
 
         msg = format_message(
@@ -451,6 +453,9 @@ class Executor:
             "open_positions": len(book.positions),
             "opens_today": book.opens_today_count(today),
             "positions": [p.to_dict() for p in book.positions],
+            # Read-only research context. This is intentionally not passed to
+            # merge/risk/order code and cannot affect signal eligibility.
+            "research_feedback": feedback_report(),
         }
         if self.client:
             try:
