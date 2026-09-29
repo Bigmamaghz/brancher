@@ -7,6 +7,7 @@ from collections import defaultdict
 from src.alpaca import cancel_open_orders, get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
+from src.exit_monitor import run_exit_monitor
 from src.merge import MergedSignal, SkippedSignal, merge_signals
 from src.news import NewsItem, detect_news, summarize_health
 from src.poll import PollResult, poll_all
@@ -72,6 +73,7 @@ class Executor:
 
         winners, _ = merge_signals(results)
         self._process_sells(book, today)
+        run_exit_monitor(self, book)
         self._process_enters(winners, book, today)
 
         if (
@@ -357,10 +359,30 @@ class Executor:
                 try:
                     order_id = submit_buy(self.client, sig.ticker, qty)
                 except Exception as exc:
-                    logger.error("Buy failed for %s: %s", sig.ticker, exc)
-                    if not self.settings.telegram_news_only:
-                        self._send_skip_once(merged, book, f"order failed: {exc}")
-                    continue
+                    # Wash-trade guard (buy side): an unfilled opposite-side sell
+                    # blocks the buy. Cancel open orders for the symbol and
+                    # retry once — never silently drop the entry (CMCSA 9/28).
+                    if "wash trade" in str(exc) or "40310000" in str(exc):
+                        cancelled = cancel_open_orders(self.client, sig.ticker)
+                        if cancelled:
+                            try:
+                                order_id = submit_buy(self.client, sig.ticker, qty)
+                                logger.info("Buy for %s succeeded after cancelling %d open order(s)", sig.ticker, cancelled)
+                            except Exception as exc2:
+                                logger.error("Buy retry failed for %s: %s", sig.ticker, exc2)
+                                if not self.settings.telegram_news_only:
+                                    self._send_skip_once(merged, book, f"order failed after cancel: {exc2}")
+                                continue
+                        else:
+                            logger.error("Buy blocked for %s (no open orders to cancel): %s", sig.ticker, exc)
+                            if not self.settings.telegram_news_only:
+                                self._send_skip_once(merged, book, f"order failed: {exc}")
+                            continue
+                    else:
+                        logger.error("Buy failed for %s: %s", sig.ticker, exc)
+                        if not self.settings.telegram_news_only:
+                            self._send_skip_once(merged, book, f"order failed: {exc}")
+                        continue
 
             position = make_position(
                 ticker=sig.ticker,

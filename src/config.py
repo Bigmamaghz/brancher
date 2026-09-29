@@ -14,7 +14,7 @@ DATA_DIR = REPO_ROOT / "data" / "portfolio"
 BOTS_DATA_DIR = DATA_DIR / "bots"
 BOOK_PATH = DATA_DIR / "book.json"
 BOTS_YAML = REPO_ROOT / "config" / "bots.yaml"
-LOOP_INTERVAL_SEC = 900  # 15 minutes
+LOOP_INTERVAL_SEC = 300  # 5 minutes — faster live SL/TP exits (Joseph 2026-09-29)
 
 
 class PaperOnlyError(RuntimeError):
