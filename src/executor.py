@@ -4,9 +4,16 @@ import logging
 from datetime import datetime, timezone
 from collections import defaultdict
 
-from src.alpaca import cancel_open_orders, get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
+from src.alpaca import get_equity, get_open_positions, get_trading_client, submit_buy
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
+from src.joe_gate import joe_check
+from src.exits import (
+    ReconcileEvent,
+    SellResult,
+    reconcile_book as sync_book_with_broker,
+    sell_due_position,
+)
 from src.merge import MergedSignal, SkippedSignal, merge_signals
 from src.news import NewsItem, detect_news, summarize_health
 from src.poll import PollResult, poll_all
@@ -71,6 +78,10 @@ class Executor:
             self._send_enter_today_notices(winners, book, today)
 
         winners, _ = merge_signals(results)
+        # Sync the book with Alpaca before any timed exit. A stop that already
+        # filled must be booked here, or the exit below would sell a flat name.
+        if self.client:
+            self.reconcile_book(book)
         self._process_sells(book, today)
         self._process_enters(winners, book, today)
 
@@ -211,64 +222,46 @@ class Executor:
             self.telegram.send(msg, dry_run=self.dry_run)
             book.mark_notice_sent(sig.id, label)
 
-    def _process_sells(self, book: Book, today: str) -> None:
-        to_close = [p for p in book.positions if is_sell_today(p.close_on)]
-        for pos in to_close:
-            entry_px = None
-            exit_px = None
-            if self.client:
-                try:
-                    from src.alpaca import get_position_entry_price
-                    entry_px = get_position_entry_price(self.client, pos.ticker)
-                except Exception:
-                    pass
-            order_id = "dry-run"
-            if self.client:
-                try:
-                    order_id = submit_sell(self.client, pos.ticker, pos.qty)
-                except Exception as exc:
-                    # Wash-trade guard: an unfilled opposite-side order blocks the sell.
-                    # Cancel open orders for the symbol and retry once.
-                    if "wash trade" in str(exc) or "40310000" in str(exc):
-                        cancelled = cancel_open_orders(self.client, pos.ticker)
-                        if cancelled:
-                            try:
-                                order_id = submit_sell(self.client, pos.ticker, pos.qty)
-                                logger.info("Sell for %s succeeded after cancelling %d open order(s)", pos.ticker, cancelled)
-                            except Exception as exc2:
-                                logger.error("Sell retry failed for %s: %s", pos.ticker, exc2)
-                                continue
-                        else:
-                            logger.error("Sell failed for %s: %s", pos.ticker, exc)
-                            continue
-                    else:
-                        logger.error("Sell failed for %s: %s", pos.ticker, exc)
-                        continue
+    def reconcile_book(self, book: Book) -> None:
+        """Book broker-closed longs and flag positions the book does not know."""
+        if self.client is None:
+            return
+        for event in sync_book_with_broker(self.client, book):
+            self._announce_reconcile(book, event)
 
-            msg = format_message(
-                kind="SELL",
-                source=pos.bot_name,
-                signal_line=f"{pos.ticker}",
-                action=f"SELL sell qty={pos.qty}",
-                detail=f"order={order_id}" if not self.dry_run else "dry-run",
-                dates=f"SELL: {pos.close_on} next session",
-            )
-            self.telegram.send(msg, dry_run=self.dry_run)
-            if self.client:
-                try:
-                    from alpaca.trading.requests import GetOrdersRequest
-                    from alpaca.trading.enums import QueryOrderStatus
-                    for o in self.client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[pos.ticker], limit=5)):
-                        if o.side.value == "sell" and o.filled_avg_price:
-                            exit_px = float(o.filled_avg_price)
-                            break
-                except Exception:
-                    exit_px = None
-            from src.shadow import record_closed
-            record_closed(book, pos.ticker, pos.bot_id, pos.signal_id, pos.enter_on,
-                          pos.close_on, entry_px, exit_px,
-                          datetime.now(timezone.utc).isoformat())
-            book.close_position(pos.ticker)
+    def _process_sells(self, book: Book, today: str) -> None:
+        to_close = [p for p in list(book.positions) if is_sell_today(p.close_on)]
+        for pos in to_close:
+            if not self.client:
+                # No broker order is sent. Recording the planned close is what
+                # dry-run has always done; live sells wait for a fill.
+                record_closed(
+                    book,
+                    pos.ticker,
+                    pos.bot_id,
+                    pos.signal_id,
+                    pos.enter_on,
+                    pos.close_on,
+                    None,
+                    None,
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                book.close_position(pos.ticker)
+                self.telegram.send(
+                    format_message(
+                        kind="SELL",
+                        source=pos.bot_name,
+                        signal_line=f"{pos.ticker}",
+                        action=f"SELL sell qty={pos.qty}",
+                        detail="dry-run",
+                        dates=f"SELL: {pos.close_on} next session",
+                    ),
+                    dry_run=self.dry_run,
+                )
+                continue
+
+            result = sell_due_position(self.client, book, pos)
+            self._announce_sell(pos, result)
 
         # SELL TODAY — news mode only if closing today (handled by SELL above)
         if self.settings.telegram_news_only:
@@ -303,7 +296,6 @@ class Executor:
             if sig.ticker in open_tickers:
                 continue
 
-            from src.shadow import bench_reason
             bench = bench_reason(book, sig.id)
             if bench:
                 if not self.settings.telegram_news_only:
@@ -323,7 +315,6 @@ class Executor:
             # joe is research-only: he never orders, never texts. Infra failure
             # inside joe_check fails open; the stack never stalls on joe.
             if self.settings.joe_veto:
-                from src.joe_gate import joe_check
                 allow, jreason = joe_check(sig)
                 if not allow:
                     logger.info("joe veto %s: %s", sig.id, jreason)
@@ -383,6 +374,72 @@ class Executor:
                 dates=format_dates(sig.enter_on, sig.close_on),
             )
             self.telegram.send(msg, dry_run=self.dry_run)
+
+    def _announce_sell(self, pos, result: SellResult) -> None:
+        if result.kind == "submitted":
+            action = f"SELL submitted qty={result.qty}"
+            detail = f"order={result.order_id}; close is booked only after the fill"
+        elif result.kind == "filled":
+            action = f"SELL filled qty={result.qty} @ {result.fill_price}"
+            detail = f"order={result.order_id}; fill time {result.fill_time}"
+        elif result.kind == "reconciled":
+            action = f"SELL reconciled qty={pos.qty} @ {result.fill_price}"
+            detail = f"no long left at Alpaca; fill time {result.fill_time}"
+        elif result.kind in ("skip", "wait"):
+            return
+        else:
+            logger.error("Unhandled sell result %s", result.kind)
+            return
+        self.telegram.send(
+            format_message(
+                kind="SELL",
+                source=pos.bot_name,
+                signal_line=f"{pos.ticker}",
+                action=action,
+                detail=detail,
+                dates=f"SELL: {pos.close_on} next session",
+            ),
+            dry_run=self.dry_run,
+        )
+
+    def _announce_reconcile(self, book: Book, event: ReconcileEvent) -> None:
+        if event.kind == "closed":
+            self.telegram.send(
+                format_message(
+                    kind="SELL",
+                    source=event.bot_name,
+                    signal_line=event.symbol,
+                    action=f"SELL reconciled qty={event.qty} @ {event.fill_price}",
+                    detail=f"broker position already closed; fill time {event.fill_time}",
+                    dates=f"SELL: {event.close_on}",
+                ),
+                dry_run=self.dry_run,
+            )
+            return
+        if event.kind == "unexpected_short":
+            action = f"UNEXPECTED SHORT {event.symbol} qty={event.qty}"
+            detail = "Alpaca holds a short the book does not know. Brancher will not trade it."
+        elif event.kind == "unexpected_long":
+            action = f"UNEXPECTED LONG {event.symbol} qty={event.qty}"
+            detail = "Alpaca holds shares the book does not know. Brancher will not trade them."
+        else:
+            logger.error("Unhandled reconcile event %s", event.kind)
+            return
+        label = f"{event.kind}:{event.qty}"
+        key = f"reconcile:{event.symbol}"
+        if book.notice_already_sent(key, label):
+            return
+        self.telegram.send(
+            format_message(
+                kind="RECONCILE",
+                source="Brancher",
+                signal_line=event.symbol,
+                action=action,
+                detail=detail,
+            ),
+            dry_run=self.dry_run,
+        )
+        book.mark_notice_sent(key, label)
 
     def _send_skip_once(self, merged: MergedSignal, book: Book, reason: str) -> None:
         sig = merged.signal
