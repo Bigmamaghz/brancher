@@ -6,11 +6,20 @@ from src.poll import Signal
 
 
 def check_eligible(signal: Signal, settings: Settings) -> str | None:
-    """Return skip reason if signal fails risk checks, else None."""
+    """Return skip reason if signal fails risk checks, else None.
+
+    Gate = MIN_N floor + net avg R > 0 on BOTH full history and trailing 365d
+    (replaces the old win%-vs-XLV MIN_HIT gate, per fix 2).
+    """
     if not signal.eligible:
         return "not eligible"
-    if signal.hit < settings.min_hit:
-        return f"hit {signal.hit:.0%} below MIN_HIT {settings.min_hit:.0%}"
+    if signal.n < settings.min_n:
+        return f"n {signal.n} below MIN_N {settings.min_n}"
+    if signal.net_r_full is None or signal.net_r_recent is None:
+        return "net-R unavailable"
+    if signal.net_r_full <= 0 or signal.net_r_recent <= 0:
+        return (f"net-R not positive both windows "
+                f"(full {signal.net_r_full:+.3f}, recent {signal.net_r_recent:+.3f})")
     if signal.side != "UP":
         return f"unsupported side {signal.side}"
     return None

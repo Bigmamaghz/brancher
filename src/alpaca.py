@@ -48,12 +48,21 @@ def submit_sell(client, symbol: str, qty: int) -> str:
 
 
 def cancel_open_orders(client, symbol: str) -> int:
-    """Cancel open (unfilled) orders for symbol. Returns count cancelled."""
+    """Cancel open (unfilled) MARKET orders for symbol. Returns count cancelled.
+
+    Only market orders are cancelled — they are the conflicting side that triggers
+    a wash-trade (40310000) reject. Protective STOP, STOP_LIMIT, LIMIT and
+    TRAILING_STOP orders are NEVER touched.
+    """
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
     n = 0
     try:
         for o in client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])):
+            otype = getattr(o.order_type, "value", o.order_type)
+            otype = str(otype).lower()
+            if otype != "market":
+                continue  # never cancel protective (stop/stop_limit/limit/trailing_stop)
             client.cancel_order(o.id)
             n += 1
     except Exception:
@@ -76,3 +85,35 @@ def get_position_entry_price(client, symbol: str) -> float | None:
         if p.symbol == symbol:
             return float(p.avg_entry_price)
     return None
+
+def open_stop_orders(client, symbol: str) -> list:
+    """Open protective orders (STOP / STOP_LIMIT / TRAILING_STOP) for symbol.
+
+    Read-only discovery so exit_monitor can clear a resting stop before a manual
+    sell. Market/limit orders are intentionally excluded.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    out = []
+    try:
+        for o in client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])):
+            otype = str(getattr(o.order_type, "value", o.order_type)).lower()
+            if otype in ("stop", "stop_limit", "trailing_stop"):
+                out.append(o)
+    except Exception:
+        pass
+    return out
+
+
+def cancel_order_by_id(client, order_id) -> bool:
+    """Cancel exactly one order by id. Returns True on success.
+
+    Used ONLY by exit_monitor's manual-exit path to clear that ticker's resting
+    stop before selling. cancel_open_orders() stays market-only and untouched.
+    """
+    try:
+        client.cancel_order(order_id)
+        return True
+    except Exception:
+        return False

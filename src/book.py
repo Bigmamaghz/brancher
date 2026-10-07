@@ -19,6 +19,10 @@ class Position:
     enter_on: str
     close_on: str
     opened_at: str
+    # Fix 3: stop/target frozen ONCE at entry (from ATR at entry). Never recalculated.
+    stop: float | None = None
+    target: float | None = None
+    atr_at_entry: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Position:
@@ -120,6 +124,9 @@ def make_position(
     signal_id: str,
     enter_on: str,
     close_on: str,
+    stop: float | None = None,
+    target: float | None = None,
+    atr_at_entry: float | None = None,
 ) -> Position:
     return Position(
         ticker=ticker,
@@ -130,4 +137,7 @@ def make_position(
         enter_on=enter_on,
         close_on=close_on,
         opened_at=datetime.now(timezone.utc).isoformat(),
+        stop=stop,
+        target=target,
+        atr_at_entry=atr_at_entry,
     )

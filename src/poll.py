@@ -27,6 +27,8 @@ class Signal:
     sent_at: str
     pattern_id: str | None = None
     sec_url: str | None = None
+    net_r_full: float | None = None
+    net_r_recent: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Signal:
@@ -44,6 +46,8 @@ class Signal:
             sent_at=d.get("sent_at", ""),
             pattern_id=d.get("pattern_id"),
             sec_url=d.get("sec_url"),
+            net_r_full=float(d["net_r_full"]) if d.get("net_r_full") is not None else None,
+            net_r_recent=float(d["net_r_recent"]) if d.get("net_r_recent") is not None else None,
         )
 
 

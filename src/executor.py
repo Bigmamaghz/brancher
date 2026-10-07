@@ -23,6 +23,7 @@ from src.schedule import (
     today_et_str,
 )
 from src.sizing import qty_for_hit
+from src.levels import atr_at_entry, freeze_levels
 from src.telegram import TelegramClient, format_dates, format_message, format_signal_line
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class Executor:
         bots = bots or enabled_bots()
         today = today_et_str()
         book = load_book()
+        self._backfill_frozen_levels(book)
 
         results = poll_all(bots)
         self._log_poll_errors(results)
@@ -84,6 +86,57 @@ class Executor:
             self._send_eod(book, results, today)
 
         save_book(book)
+
+    def _freeze_entry_levels(self, position, ticker: str) -> None:
+        """Fix 3: compute stop/target ONCE at entry from ATR-at-entry and store them.
+
+        Uses the position's entry price (Alpaca avg_entry_price if available, else
+        the latest close from read-only daily bars). Read-only data access.
+        """
+        entry = None
+        if self.client:
+            try:
+                entry = get_position_entry_price(self.client, ticker)
+            except Exception:
+                entry = None
+        if entry is None:
+            try:
+                from src.levels import bars_for
+
+                bars = bars_for(ticker, self.settings)
+                if bars:
+                    entry = float(bars[-1]["c"])
+            except Exception:
+                entry = None
+        if entry is None:
+            logger.warning("freeze_levels: no entry price for %s; stop/target not set", ticker)
+            return
+        atr = atr_at_entry(ticker, self.settings)
+        stop, target = freeze_levels("BUY", entry, atr)
+        position.stop = stop
+        position.target = target
+        position.atr_at_entry = round(atr, 2) if atr else None
+        logger.info(
+            "freeze_levels: %s entry=%.2f atr=%s stop=%s target=%s (frozen at entry)",
+            ticker, entry, position.atr_at_entry, stop, target,
+        )
+
+    def _backfill_frozen_levels(self, book: Book) -> None:
+        """Fix 3: legacy open positions without saved stop/target get them frozen
+        ONCE now, then logged. Existing frozen values are never overwritten."""
+        missing = [p for p in book.positions if p.stop is None or p.target is None]
+        if not missing:
+            return
+        done = []
+        for p in missing:
+            try:
+                self._freeze_entry_levels(p, p.ticker)
+                if p.stop is not None and p.target is not None:
+                    done.append(p.ticker)
+            except Exception as exc:
+                logger.warning("backfill freeze failed for %s: %s", p.ticker, exc)
+        if done:
+            logger.info("freeze-backfill: saved stop/target once for %s", ", ".join(done))
 
     def _send_news(self, items: list[NewsItem], book: Book) -> None:
         for item in items:
@@ -298,11 +351,15 @@ class Executor:
         today: str,
     ) -> None:
         open_tickers = book.open_tickers()
+        entered_today: set[str] = set()
 
         for merged in winners:
             sig = merged.signal
 
             if sig.ticker in open_tickers:
+                continue
+            if sig.ticker in entered_today:
+                logger.info("One-position-per-ticker rule: skip %s (already entered today)", sig.ticker)
                 continue
 
             from src.shadow import bench_reason
@@ -350,6 +407,10 @@ class Executor:
                 self.settings.min_hit,
             )
             if qty <= 0:
+                # hit no longer gates (fix 2); a passing pattern opens at base size,
+                # matching the old minimum passing size — never bigger than before.
+                qty = self.settings.paper_qty
+            if qty <= 0:
                 if not self.settings.telegram_news_only:
                     self._send_skip_once(merged, book, "qty=0 after sizing")
                 continue
@@ -393,7 +454,10 @@ class Executor:
                 enter_on=sig.enter_on,
                 close_on=sig.close_on,
             )
+            # Fix 3: freeze stop/target ONCE at entry (from ATR at entry).
+            self._freeze_entry_levels(position, sig.ticker)
             book.record_open(position, today)
+            entered_today.add(sig.ticker)
             open_tickers.add(sig.ticker)
 
             msg = format_message(
