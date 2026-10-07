@@ -16,6 +16,10 @@ BOOK_PATH = DATA_DIR / "book.json"
 BOTS_YAML = REPO_ROOT / "config" / "bots.yaml"
 LOOP_INTERVAL_SEC = 300  # 5 minutes — faster live SL/TP exits (Joseph 2026-09-29)
 
+# Joe consult and the pattern inventory. Override with env; do not hardcode secrets.
+DEFAULT_JOE_URL = "http://127.0.0.1:8080/consult"
+DEFAULT_PATTERN_INVENTORY = "/Users/mybot/joe/vault/Patterns/Pattern-Inventory.md"
+
 
 class PaperOnlyError(RuntimeError):
     """Raised when a live Alpaca endpoint is detected."""
@@ -38,6 +42,9 @@ class Settings:
     telegram_eod: bool
     telegram_trades_only: bool
     joe_veto: bool
+    joe_url: str = DEFAULT_JOE_URL
+    pattern_inventory_path: str = DEFAULT_PATTERN_INVENTORY
+    entry_decision_log: str = ""
 
 
 def _validate_paper_url(url: str | None) -> str | None:
@@ -81,6 +88,9 @@ def load_settings(env_path: Path | None = None) -> Settings:
         # If 1: only ENTER/SELL (no NEWS). Default 0 so NEWS + trades both send.
         telegram_trades_only=os.getenv("TELEGRAM_TRADES_ONLY", "0").lower() in ("1", "true", "yes"),
         joe_veto=os.getenv("JOE_VETO", "1").lower() in ("1", "true", "yes"),
+        joe_url=os.getenv("JOE_URL", DEFAULT_JOE_URL),
+        pattern_inventory_path=os.getenv("PATTERN_INVENTORY_PATH", DEFAULT_PATTERN_INVENTORY),
+        entry_decision_log=os.getenv("ENTRY_DECISION_LOG", ""),
     )
 
 
