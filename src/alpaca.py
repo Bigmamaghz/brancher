@@ -98,10 +98,22 @@ def get_position_qty(client, symbol: str) -> int | None:
     try:
         for p in client.get_all_positions():
             if p.symbol == symbol:
-                return int(float(getattr(p, "qty_available", p.qty)))
+                av = getattr(p, "qty_available", None)
+                if av is None:
+                    return None  # fail closed: unknown availability, never fall back to qty
+                return int(float(av))
         return 0
     except Exception:
         return None
+
+
+def market_is_open(client) -> bool | None:
+    """Alpaca clock is_open, or None if it cannot be read (fail closed)."""
+    try:
+        return bool(client.get_clock().is_open)
+    except Exception:
+        return None
+
 
 def open_stop_orders(client, symbol: str) -> list:
     """Open protective orders (STOP / STOP_LIMIT / TRAILING_STOP) for symbol.

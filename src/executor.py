@@ -279,17 +279,23 @@ class Executor:
                     pass
             order_id = "dry-run"
             if self.client:
-                # Live-quantity guard: never sell more than Alpaca actually holds.
-                # qty_available excludes shares already held by a resting stop, and
-                # a read failure (None) fails closed. Refuse if flat/short (<=0).
-                from src.alpaca import get_position_qty
+                # Live-quantity guard + market-hours gate: never sell more than
+                # Alpaca holds, and only while the market is open. Fail closed.
+                from src.alpaca import get_position_qty, market_is_open
+                from src.decision_log import sell_decision, log_decision
 
                 avail = get_position_qty(self.client, pos.ticker)
-                if avail is None or avail <= 0:
+                mopen = market_is_open(self.client)
+                decision, reason = sell_decision(pos.qty, avail, mopen)
+                log_decision(pos.ticker, pos.qty, avail, mopen, decision, reason)
+                if decision == "skip-guard":
                     logger.warning(
                         "live-qty guard: %s skip sell (book qty=%s, live available=%s) — not selling",
                         pos.ticker, pos.qty, avail,
                     )
+                    continue
+                if decision == "skip-closed":
+                    logger.warning("market-hours gate: %s skip (closed/unknown)", pos.ticker)
                     continue
                 sell_qty = min(pos.qty, avail)
                 try:
@@ -337,6 +343,16 @@ class Executor:
                           pos.close_on, entry_px, exit_px,
                           datetime.now(timezone.utc).isoformat())
             book.close_position(pos.ticker)
+
+        # Per-cycle decision log: one "none" line for book positions not sell-due.
+        if self.client:
+            from src.alpaca import get_position_qty, market_is_open
+            from src.decision_log import log_decision
+
+            for p in book.positions:
+                if not is_sell_today(p.close_on):
+                    log_decision(p.ticker, p.qty, get_position_qty(self.client, p.ticker),
+                                 market_is_open(self.client), "none", "not sell-due")
 
         # SELL TODAY — news mode only if closing today (handled by SELL above)
         if self.settings.telegram_news_only:

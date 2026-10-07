@@ -150,17 +150,23 @@ def run_exit_monitor(self, book: Book) -> None:
                 break
         if blocked:
             continue
-        # Live-quantity guard: never sell more than Alpaca actually holds.
-        # qty_available excludes shares held by a resting stop; a read failure
-        # (None) fails closed. Refuse if flat/short (<=0).
-        from src.alpaca import get_position_qty
+        # Live-quantity guard + market-hours gate: never sell more than Alpaca
+        # holds, and only while the market is open. Fail closed.
+        from src.alpaca import get_position_qty, market_is_open
+        from src.decision_log import sell_decision, log_decision
 
         avail = get_position_qty(self.client, ticker)
-        if avail is None or avail <= 0:
+        mopen = market_is_open(self.client)
+        decision, reason = sell_decision(pos.qty, avail, mopen)
+        log_decision(ticker, pos.qty, avail, mopen, decision, reason)
+        if decision == "skip-guard":
             logger.warning(
                 "live-qty guard: %s skip exit (book qty=%s, live available=%s) — not selling",
                 ticker, pos.qty, avail,
             )
+            continue
+        if decision == "skip-closed":
+            logger.warning("market-hours gate: %s skip (closed/unknown)", ticker)
             continue
         sell_qty = min(pos.qty, avail)
         try:

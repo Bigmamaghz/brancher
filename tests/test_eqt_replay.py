@@ -35,6 +35,12 @@ class FakeClient:
     def get_orders(self, filter):
         return [FakeOrder("filled", 50.30)]  # a PRIOR sell — must NOT be used
 
+    def get_clock(self):
+        # Market-hours gate reads this; model an OPEN market.
+        class C:
+            is_open = True
+        return C()
+
     def get_all_positions(self):
         # Live-quantity guard reads this; model a long EQT position.
         class P:

@@ -53,6 +53,12 @@ class MockClient:
         # Real code queries status=OPEN for one symbol; all here share the symbol.
         return list(self.open.values())
 
+    def get_clock(self):
+        # Market-hours gate reads this; model an OPEN market.
+        class C:
+            is_open = True
+        return C()
+
     def get_all_positions(self):
         # Live-quantity guard reads this; model an open long for the test ticker.
         class P:

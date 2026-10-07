@@ -38,6 +38,12 @@ class FakeClient:
     def get_orders(self, filter):
         return list(self._stops)
 
+    def get_clock(self):
+        # Market-hours gate reads this; model an OPEN market.
+        class C:
+            is_open = True
+        return C()
+
     def get_all_positions(self):
         # Live-quantity guard reads this; model a long EQT position.
         class P:
