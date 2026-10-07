@@ -433,14 +433,13 @@ class Executor:
                     self._send_skip_once(merged, book, cap_reason)
                 continue
 
-            # Fail closed: inventory, code levels, then Joe. A no never orders.
-            if self.settings.joe_veto:
-                allow, jreason = joe_check(sig, settings=self.settings)
-                if not allow:
-                    logger.info("joe gate blocked %s: %s", sig.id, jreason)
-                    if not self.settings.telegram_news_only:
-                        self._send_skip_once(merged, book, f"joe: {jreason}")
-                    continue
+            # Inventory always runs. JOE_VETO=0 skips only the consult inside joe_check.
+            allow, jreason = joe_check(sig, settings=self.settings)
+            if not allow:
+                logger.info("joe gate blocked %s: %s", sig.id, jreason)
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, f"joe: {jreason}")
+                continue
 
             qty = qty_for_hit(
                 sig.hit,

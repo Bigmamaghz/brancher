@@ -1,29 +1,25 @@
 """Fail-closed Joe entry gate.
 
-Each test points Joe at its own localhost URL (closed port, hanging port, or a
-fake). None of them use :8080. Decision rows go to tmp_path.
+Joe is a fake joe_consult.py in a temp directory. The child loads that file.
+No test contacts :8080, :11434, or /Users/mybot/joe. Decision rows go to tmp_path.
 
-The fake reply shape is the captured consult() object:
-{ok, verdict, sources:[{source, text}], ts}.
+Reply shape matches a captured consult(): {ok, verdict, sources:[{source, text}], ts}.
 """
 from __future__ import annotations
 
 import csv
 import json
-import socket
-import threading
+import os
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import create_autospec
-from urllib.parse import urlparse
+from unittest.mock import create_autospec, patch
 
 from alpaca.trading.client import TradingClient
 
 import src.executor as ex
 from src.book import Book
 from src.config import REPO_ROOT, Settings
-from src.joe_gate import joe_check
+from src.joe_gate import joe_check, start_joe_self_check
 from src.merge import MergedSignal
 from src.poll import Signal
 
@@ -31,7 +27,28 @@ TODAY = "2026-10-07"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pattern_inventory.md"
 SELL_LOG = REPO_ROOT / "logs" / "decisions.csv"
 
-# Captured consult() fields. Texts are short; the keys match the live reply.
+_FAKE_MODULE = '''\
+import json
+import os
+import time
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+
+
+def consult(question, timeout=60):
+    calls = _HERE / "calls.txt"
+    previous = int(calls.read_text() or "0") if calls.exists() else 0
+    calls.write_text(str(previous + 1))
+    mode = (_HERE / "mode.txt").read_text().strip()
+    if mode == "hang":
+        (_HERE / "pid").write_text(str(os.getpid()))
+        time.sleep(60)
+    if mode == "raise":
+        raise RuntimeError("consult raised")
+    return json.loads((_HERE / "reply.json").read_text())
+'''
+
 _CAPTURED_SOURCES = [
     {
         "source": "brancher__src__executor.py",
@@ -44,127 +61,38 @@ _CAPTURED_SOURCES = [
 ]
 
 
-def _joe_reply(verdict: str, sources: list[dict]) -> dict:
+def _joe_reply(verdict: str, sources: list[dict], *, ok: bool = True) -> dict:
     return {
-        "ok": True,
+        "ok": ok,
         "verdict": verdict,
         "sources": sources,
         "ts": 1791349741,
     }
 
 
-def _require_local_url(url: str) -> None:
-    parsed = urlparse(url)
-    assert parsed.hostname in {"127.0.0.1", "localhost"}
-    assert parsed.port is not None
-    assert parsed.port != 8080
+def _isolated(path: Path) -> None:
+    text = str(path.resolve())
+    assert "/Users/mybot/joe" not in text
+    assert "8080" not in text
+    assert "11434" not in text
 
 
-def _closed_url() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    url = f"http://127.0.0.1:{port}/consult"
-    _require_local_url(url)
-    return url
+def _install_fake(directory: Path, *, mode: str = "reply", reply: dict | None = None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    _isolated(directory)
+    (directory / "joe_consult.py").write_text(_FAKE_MODULE)
+    (directory / "mode.txt").write_text(mode)
+    (directory / "calls.txt").write_text("0")
+    if reply is not None:
+        (directory / "reply.json").write_text(json.dumps(reply))
+    return directory
 
 
-class _FakeJoe:
-    """Localhost HTTP server that returns one JSON consult reply."""
-
-    def __init__(self, payload: dict):
-        self.payload = payload
-        self.calls = 0
-        self.url = ""
-        self._httpd: ThreadingHTTPServer | None = None
-
-    def __enter__(self) -> "_FakeJoe":
-        owner = self
-        body = json.dumps(self.payload).encode()
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                owner.calls += 1
-                length = int(self.headers.get("Content-Length", "0") or 0)
-                if length:
-                    self.rfile.read(length)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, fmt, *args):
-                return
-
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        port = self._httpd.server_address[1]
-        self.url = f"http://127.0.0.1:{port}/consult"
-        _require_local_url(self.url)
-        threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
-        return self
-
-    def __exit__(self, *exc) -> None:
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-
-
-class _HangingJoe:
-    """Accepts the TCP connection and never writes a response."""
-
-    def __init__(self):
-        self.calls = 0
-        self.url = ""
-        self._stop = threading.Event()
-        self._sock: socket.socket | None = None
-
-    def __enter__(self) -> "_HangingJoe":
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(5)
-        port = sock.getsockname()[1]
-        self.url = f"http://127.0.0.1:{port}/consult"
-        _require_local_url(self.url)
-        self._sock = sock
-        threading.Thread(target=self._serve, daemon=True).start()
-        return self
-
-    def _serve(self) -> None:
-        assert self._sock is not None
-        self._sock.settimeout(0.2)
-        while not self._stop.is_set():
-            try:
-                conn, _ = self._sock.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            self.calls += 1
-            conn.settimeout(0.2)
-            while not self._stop.is_set():
-                try:
-                    data = conn.recv(4096)
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-                if not data:
-                    break
-            try:
-                conn.close()
-            except OSError:
-                pass
-
-    def __exit__(self, *exc) -> None:
-        self._stop.set()
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
+def _calls(directory: Path) -> int:
+    path = directory / "calls.txt"
+    if not path.exists():
+        return 0
+    return int(path.read_text() or "0")
 
 
 class _Telegram:
@@ -174,11 +102,13 @@ class _Telegram:
 
 def _settings(
     tmp_path: Path,
-    joe_url: str,
+    joe_dir: Path,
     inventory: Path,
+    *,
     max_opens_per_day: int = 5,
+    joe_veto: bool = True,
 ) -> Settings:
-    _require_local_url(joe_url)
+    _isolated(joe_dir)
     return Settings(
         alpaca_api_key="",
         alpaca_secret_key="",
@@ -194,18 +124,18 @@ def _settings(
         telegram_news_only=True,
         telegram_eod=False,
         telegram_trades_only=False,
-        joe_veto=True,
-        joe_url=joe_url,
+        joe_veto=joe_veto,
+        joe_consult_dir=str(joe_dir),
         pattern_inventory_path=str(inventory),
         entry_decision_log=str(tmp_path / "decisions.csv"),
     )
 
 
-def _signal(ticker: str, pattern: str) -> Signal:
+def _signal(ticker: str, pattern: str, *, side: str = "UP") -> Signal:
     return Signal(
         id=f"fleet-{ticker}-{pattern}",
         ticker=ticker,
-        side="UP",
+        side=side,
         hit=0.80,
         n=40,
         event_type=pattern,
@@ -253,42 +183,52 @@ def _sell_log_bytes() -> bytes | None:
     return None
 
 
-def test_closed_port_no_entry(tmp_path):
+def test_consult_import_error_no_entry(tmp_path):
     before = _sell_log_bytes()
-    settings = _settings(tmp_path, _closed_url(), FIXTURE)
+    joe_dir = tmp_path / "empty-joe"
+    joe_dir.mkdir()
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
     book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
     _assert_no_order(book, client)
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
-    assert rows[0]["ticker"] == "FFIV"
-    assert "joe consult failed" in rows[0]["reason"]
+    assert "import error" in rows[0]["reason"]
     assert _sell_log_bytes() == before
 
 
-def test_hanging_port_no_entry_within_15s(tmp_path):
+def test_consult_child_hang_is_killed_within_11s(tmp_path):
     before = _sell_log_bytes()
-    with _HangingJoe() as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE)
-        started = time.monotonic()
-        book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
-        elapsed = time.monotonic() - started
-    _assert_no_order(book, client)
-    assert elapsed < 15
-    assert joe.calls >= 1
+    joe_dir = _install_fake(tmp_path / "hang-joe", mode="hang")
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    started = time.monotonic()
+    allow, reason = joe_check(
+        _signal("FFIV", "20_TweezerBottom-2026-09-28"),
+        settings=settings,
+    )
+    elapsed = time.monotonic() - started
+    assert allow is False
+    assert "killed" in reason
+    assert elapsed < 11.5
+    pid = int((joe_dir / "pid").read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        dead = True
+    else:
+        dead = False
+    assert dead, "hung consult child is still running"
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
-    assert "timed out" in rows[0]["reason"]
     assert _sell_log_bytes() == before
 
 
 def test_empty_sources_no_entry(tmp_path):
     before = _sell_log_bytes()
-    reply = _joe_reply("TAKE", [])
-    with _FakeJoe(reply) as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE)
-        book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
-        assert joe.calls == 1
+    joe_dir = _install_fake(tmp_path / "joe", reply=_joe_reply("TAKE", []))
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
     _assert_no_order(book, client)
+    assert _calls(joe_dir) == 1
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
     assert rows[0]["joe_ok"] == "true"
@@ -300,11 +240,13 @@ def test_empty_sources_no_entry(tmp_path):
 
 def test_wst_conflicting_no_entry(tmp_path):
     before = _sell_log_bytes()
-    with _FakeJoe(_joe_reply("TAKE", list(_CAPTURED_SOURCES))) as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE)
-        book, client = _drive(settings, _signal("WST", "streak_5down"))
-        assert joe.calls == 0
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    book, client = _drive(settings, _signal("WST", "streak_5down"))
     _assert_no_order(book, client)
+    assert _calls(joe_dir) == 0
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
     assert rows[0]["ticker"] == "WST"
@@ -314,11 +256,13 @@ def test_wst_conflicting_no_entry(tmp_path):
 
 def test_tweezer_bottom_on_aapl_no_entry(tmp_path):
     before = _sell_log_bytes()
-    with _FakeJoe(_joe_reply("TAKE", list(_CAPTURED_SOURCES))) as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE)
-        book, client = _drive(settings, _signal("AAPL", "20_TweezerBottom"))
-        assert joe.calls == 0
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    book, client = _drive(settings, _signal("AAPL", "20_TweezerBottom"))
     _assert_no_order(book, client)
+    assert _calls(joe_dir) == 0
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
     assert rows[0]["ticker"] == "AAPL"
@@ -331,11 +275,13 @@ def test_inventory_missing_no_entry(tmp_path):
     before = _sell_log_bytes()
     missing = tmp_path / "Pattern-Inventory.md"
     assert not missing.exists()
-    with _FakeJoe(_joe_reply("TAKE", list(_CAPTURED_SOURCES))) as joe:
-        settings = _settings(tmp_path, joe.url, missing)
-        book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
-        assert joe.calls == 0
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, missing)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
     _assert_no_order(book, client)
+    assert _calls(joe_dir) == 0
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "no-entry"
     assert rows[0]["inventory_status"] == "missing"
@@ -344,11 +290,13 @@ def test_inventory_missing_no_entry(tmp_path):
 
 def test_max_opens_zero_never_calls_joe(tmp_path):
     before = _sell_log_bytes()
-    with _FakeJoe(_joe_reply("TAKE", list(_CAPTURED_SOURCES))) as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE, max_opens_per_day=0)
-        book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
-        assert joe.calls == 0
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE, max_opens_per_day=0)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
     _assert_no_order(book, client)
+    assert _calls(joe_dir) == 0
     rows = _rows(settings, tmp_path)
     assert len(rows) == 1
     assert rows[0]["action"] == "no-entry"
@@ -360,17 +308,19 @@ def test_max_opens_zero_never_calls_joe(tmp_path):
 
 def test_happy_path_gate_passes_max_opens_still_blocks(tmp_path):
     before = _sell_log_bytes()
-    with _FakeJoe(_joe_reply("TAKE", list(_CAPTURED_SOURCES))) as joe:
-        settings = _settings(tmp_path, joe.url, FIXTURE, max_opens_per_day=0)
-        signal = _signal("FFIV", "20_TweezerBottom-2026-09-28")
-        allow, reason = joe_check(signal, settings=settings)
-        assert allow is True
-        assert "joe approved" in reason
-        assert "playbook_levels" in reason
-        assert joe.calls == 1
-        book, client = _drive(settings, signal)
-        _assert_no_order(book, client)
-        assert joe.calls == 1
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE, max_opens_per_day=0)
+    signal = _signal("FFIV", "20_TweezerBottom-2026-09-28")
+    allow, reason = joe_check(signal, settings=settings)
+    assert allow is True
+    assert "joe approved" in reason
+    assert "playbook_levels" in reason
+    assert _calls(joe_dir) == 1
+    book, client = _drive(settings, signal)
+    _assert_no_order(book, client)
+    assert _calls(joe_dir) == 1
     rows = _rows(settings, tmp_path)
     assert rows[0]["action"] == "enter"
     assert rows[0]["ticker"] == "FFIV"
@@ -378,8 +328,83 @@ def test_happy_path_gate_passes_max_opens_still_blocks(tmp_path):
     assert rows[0]["inventory_status"] == "active"
     assert rows[0]["joe_ok"] == "true"
     assert rows[0]["joe_verdict"] == "TAKE"
-    assert int(rows[0]["joe_source_count"]) >= 1
+    assert int(rows[0]["joe_source_count"]) >= 2
     assert rows[1]["action"] == "no-entry"
     assert "MAX_OPENS_PER_DAY" in rows[1]["reason"]
     assert rows[1]["joe_source_count"] == ""
     assert _sell_log_bytes() == before
+
+
+def test_joe_ok_false_no_entry(tmp_path):
+    before = _sell_log_bytes()
+    joe_dir = _install_fake(
+        tmp_path / "joe",
+        reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES), ok=False),
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
+    _assert_no_order(book, client)
+    assert _calls(joe_dir) == 1
+    rows = _rows(settings, tmp_path)
+    assert rows[0]["action"] == "no-entry"
+    assert rows[0]["joe_ok"] == "false"
+    assert "ok is not true" in rows[0]["reason"]
+    assert _sell_log_bytes() == before
+
+
+def test_buy_on_short_no_entry(tmp_path):
+    before = _sell_log_bytes()
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("BUY", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    allow, reason = joe_check(
+        _signal("FFIV", "20_TweezerBottom", side="short"),
+        settings=settings,
+    )
+    assert allow is False
+    assert "short" in reason
+    assert _calls(joe_dir) == 1
+    rows = _rows(settings, tmp_path)
+    assert rows[0]["action"] == "no-entry"
+    assert rows[0]["joe_verdict"] == "BUY"
+    assert _sell_log_bytes() == before
+
+
+def test_synthetic_single_source_no_entry(tmp_path):
+    before = _sell_log_bytes()
+    joe_dir = _install_fake(
+        tmp_path / "joe",
+        reply=_joe_reply("TAKE", [_CAPTURED_SOURCES[0]]),
+    )
+    settings = _settings(tmp_path, joe_dir, FIXTURE)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
+    _assert_no_order(book, client)
+    assert _calls(joe_dir) == 1
+    rows = _rows(settings, tmp_path)
+    assert rows[0]["action"] == "no-entry"
+    assert rows[0]["joe_source_count"] == "1"
+    assert "synthetic" in rows[0]["reason"]
+    assert _sell_log_bytes() == before
+
+
+def test_joe_veto_off_inventory_miss_still_blocks(tmp_path):
+    before = _sell_log_bytes()
+    missing = tmp_path / "no-inventory.md"
+    joe_dir = _install_fake(
+        tmp_path / "joe", reply=_joe_reply("TAKE", list(_CAPTURED_SOURCES))
+    )
+    settings = _settings(tmp_path, joe_dir, missing, joe_veto=False)
+    book, client = _drive(settings, _signal("FFIV", "20_TweezerBottom-2026-09-28"))
+    _assert_no_order(book, client)
+    assert _calls(joe_dir) == 0
+    rows = _rows(settings, tmp_path)
+    assert rows[0]["action"] == "no-entry"
+    assert rows[0]["inventory_status"] == "missing"
+    assert _sell_log_bytes() == before
+
+
+def test_self_check_does_not_run_under_pytest():
+    with patch("src.joe_gate.subprocess.Popen") as popen:
+        start_joe_self_check("/tmp/not-the-real-joe")
+    assert popen.call_count == 0
