@@ -150,8 +150,21 @@ def run_exit_monitor(self, book: Book) -> None:
                 break
         if blocked:
             continue
+        # Live-quantity guard: never sell more than Alpaca actually holds.
+        # qty_available excludes shares held by a resting stop; a read failure
+        # (None) fails closed. Refuse if flat/short (<=0).
+        from src.alpaca import get_position_qty
+
+        avail = get_position_qty(self.client, ticker)
+        if avail is None or avail <= 0:
+            logger.warning(
+                "live-qty guard: %s skip exit (book qty=%s, live available=%s) — not selling",
+                ticker, pos.qty, avail,
+            )
+            continue
+        sell_qty = min(pos.qty, avail)
         try:
-            order_id = submit_sell(self.client, ticker, pos.qty)
+            order_id = submit_sell(self.client, ticker, sell_qty)
         except Exception as exc:
             # Wash-trade guard: unfilled opposite-side order blocks the sell.
             if "wash trade" in str(exc) or "40310000" in str(exc):
@@ -160,7 +173,7 @@ def run_exit_monitor(self, book: Book) -> None:
 
                     cancelled = cancel_open_orders(self.client, ticker)
                     if cancelled:
-                        order_id = submit_sell(self.client, ticker, pos.qty)
+                        order_id = submit_sell(self.client, ticker, sell_qty)
                         logger.info("exit_monitor: %s sell ok after cancelling %d order(s)", ticker, cancelled)
                     else:
                         logger.error("exit_monitor: sell blocked for %s: %s", ticker, exc)

@@ -38,6 +38,16 @@ class FakeClient:
     def get_orders(self, filter):
         return list(self._stops)
 
+    def get_all_positions(self):
+        # Live-quantity guard reads this; model a long EQT position.
+        class P:
+            def __init__(self, s, q):
+                self.symbol = s
+                self.qty = q
+                self.qty_available = q
+                self.avg_entry_price = 50.09
+        return [P("EQT", 12)]
+
     def cancel_order(self, order_id):
         if not self._cancel_ok:
             raise RuntimeError("cancel rejected")

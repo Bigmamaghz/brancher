@@ -53,6 +53,16 @@ class MockClient:
         # Real code queries status=OPEN for one symbol; all here share the symbol.
         return list(self.open.values())
 
+    def get_all_positions(self):
+        # Live-quantity guard reads this; model an open long for the test ticker.
+        class P:
+            def __init__(self, s, q):
+                self.symbol = s
+                self.qty = q
+                self.qty_available = q
+                self.avg_entry_price = 100.0
+        return [P("ZZZ", 10)]
+
     def cancel_order(self, oid):
         if oid in self.open:
             self.cancelled.append(oid)

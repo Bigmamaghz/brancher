@@ -35,6 +35,16 @@ class FakeClient:
     def get_orders(self, filter):
         return [FakeOrder("filled", 50.30)]  # a PRIOR sell — must NOT be used
 
+    def get_all_positions(self):
+        # Live-quantity guard reads this; model a long EQT position.
+        class P:
+            def __init__(self, s, q):
+                self.symbol = s
+                self.qty = q
+                self.qty_available = q
+                self.avg_entry_price = 50.09
+        return [P("EQT", 12)]
+
     def get_order_by_id(self, order_id):
         return FakeOrder(self._order_status, self._fill)
 

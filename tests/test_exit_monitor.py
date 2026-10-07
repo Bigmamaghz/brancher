@@ -13,8 +13,21 @@ class FakeTelegram:
 
 
 class FakeClient:
+    def __init__(self, avail: int = 10):
+        self._avail = avail
+
     def get_orders(self, filter):
         return []
+
+    def get_all_positions(self):
+        # Live-quantity guard reads this; model a long position for each ticker.
+        class P:
+            def __init__(self, s, q):
+                self.symbol = s
+                self.qty = q
+                self.qty_available = q
+                self.avg_entry_price = 10.0
+        return [P(t, self._avail) for t in ("AAA", "BBB", "CCC")]
 
 
 def _book_with(ticker, qty=10):

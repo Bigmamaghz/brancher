@@ -86,6 +86,23 @@ def get_position_entry_price(client, symbol: str) -> float | None:
             return float(p.avg_entry_price)
     return None
 
+
+def get_position_qty(client, symbol: str) -> int | None:
+    """Live qty_available for symbol, or None if it cannot be read.
+
+    Uses qty_available (not qty) because shares already held by a resting
+    protective STOP are excluded from it. Returns None on ANY error so the
+    caller can fail closed and refuse to sell when the live state is unknown.
+    A flat/short symbol returns 0 or a negative number.
+    """
+    try:
+        for p in client.get_all_positions():
+            if p.symbol == symbol:
+                return int(float(getattr(p, "qty_available", p.qty)))
+        return 0
+    except Exception:
+        return None
+
 def open_stop_orders(client, symbol: str) -> list:
     """Open protective orders (STOP / STOP_LIMIT / TRAILING_STOP) for symbol.
 

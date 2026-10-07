@@ -279,8 +279,21 @@ class Executor:
                     pass
             order_id = "dry-run"
             if self.client:
+                # Live-quantity guard: never sell more than Alpaca actually holds.
+                # qty_available excludes shares already held by a resting stop, and
+                # a read failure (None) fails closed. Refuse if flat/short (<=0).
+                from src.alpaca import get_position_qty
+
+                avail = get_position_qty(self.client, pos.ticker)
+                if avail is None or avail <= 0:
+                    logger.warning(
+                        "live-qty guard: %s skip sell (book qty=%s, live available=%s) — not selling",
+                        pos.ticker, pos.qty, avail,
+                    )
+                    continue
+                sell_qty = min(pos.qty, avail)
                 try:
-                    order_id = submit_sell(self.client, pos.ticker, pos.qty)
+                    order_id = submit_sell(self.client, pos.ticker, sell_qty)
                 except Exception as exc:
                     # Wash-trade guard: an unfilled opposite-side order blocks the sell.
                     # Cancel open orders for the symbol and retry once.
@@ -288,7 +301,7 @@ class Executor:
                         cancelled = cancel_open_orders(self.client, pos.ticker)
                         if cancelled:
                             try:
-                                order_id = submit_sell(self.client, pos.ticker, pos.qty)
+                                order_id = submit_sell(self.client, pos.ticker, sell_qty)
                                 logger.info("Sell for %s succeeded after cancelling %d open order(s)", pos.ticker, cancelled)
                             except Exception as exc2:
                                 logger.error("Sell retry failed for %s: %s", pos.ticker, exc2)
