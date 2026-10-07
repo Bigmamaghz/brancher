@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
-from src.alpaca import cancel_order_by_id, get_position_entry_price, open_stop_orders, submit_sell
+from src.alpaca import (
+    cancel_open_orders,
+    cancel_order_by_id,
+    get_position_entry_price,
+    get_position_qty,
+    market_is_open,
+    open_stop_orders,
+    submit_sell,
+)
 from src.book import Book
+from src.decision_log import log_decision, sell_decision
+from src.reconcile import book_confirmed_close, read_sell_fill, settle_pending_exit
+from src.telegram import format_message
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +108,9 @@ def run_exit_monitor(self, book: Book) -> None:
     """Fast exits: sell intraday when a watcher flags AT_SL / AT_TP.
 
     Levels come from joe_levels.levels(): SL = entry - max(ATR14, 0.5%),
-    TP = entry + 2R. Sell path is identical to _process_sells: submit_sell,
-    telegram notice, record_closed, book.close_position. Positions sold
-    here drop out of _process_sells naturally (already removed).
+    TP = entry + 2R. A close is recorded only after the submitted order is a
+    confirmed fill. A working exit is left alone on later cycles. Positions
+    booked here drop out of _process_sells naturally (already removed).
     """
     if not self.client:
         return
@@ -111,10 +121,25 @@ def run_exit_monitor(self, book: Book) -> None:
     for ticker, row in states.items():
         if ticker not in open_tickers:
             continue
+        pos = next(p for p in book.positions if p.ticker == ticker)
+        if pos.pending_exit_order_id:
+            settled = settle_pending_exit(self.client, book, pos)
+            if settled.state == "booked":
+                msg = format_message(
+                    kind="SELL",
+                    source=pos.bot_name,
+                    signal_line=ticker,
+                    action=f"SELL booked on confirmed fill {settled.price}",
+                    detail=f"order was already working; fill time {settled.filled_at}",
+                    dates=f"FAST EXIT: was due {pos.close_on}",
+                )
+                self.telegram.send(msg, dry_run=self.dry_run)
+                continue
+            if settled.state == "working":
+                continue
         state = row.get("state")
         if state not in EXIT_STATES:
             continue
-        pos = next(p for p in book.positions if p.ticker == ticker)
         w_qty = int(row.get("qty", pos.qty))
         if pos.qty != w_qty:
             logger.warning(
@@ -152,9 +177,6 @@ def run_exit_monitor(self, book: Book) -> None:
             continue
         # Live-quantity guard + market-hours gate: never sell more than Alpaca
         # holds, and only while the market is open. Fail closed.
-        from src.alpaca import get_position_qty, market_is_open
-        from src.decision_log import sell_decision, log_decision
-
         avail = get_position_qty(self.client, ticker)
         mopen = market_is_open(self.client)
         decision, reason = sell_decision(pos.qty, avail, mopen)
@@ -175,8 +197,6 @@ def run_exit_monitor(self, book: Book) -> None:
             # Wash-trade guard: unfilled opposite-side order blocks the sell.
             if "wash trade" in str(exc) or "40310000" in str(exc):
                 try:
-                    from src.alpaca import cancel_open_orders
-
                     cancelled = cancel_open_orders(self.client, ticker)
                     if cancelled:
                         order_id = submit_sell(self.client, ticker, sell_qty)
@@ -191,32 +211,24 @@ def run_exit_monitor(self, book: Book) -> None:
                 logger.error("exit_monitor: sell failed for %s: %s", ticker, exc)
                 continue
         level = row.get("sl") if state == "AT_SL" else row.get("tp")
-        from src.telegram import format_message
-
+        if entry_px is not None:
+            pos.entry_px = entry_px
+        fill = read_sell_fill(self.client, order_id)
+        detail = f"order={order_id}" if fill else f"order={order_id} submitted, booked on fill"
         msg = format_message(
             kind="SELL",
             source=pos.bot_name,
             signal_line=ticker,
             action=f"SELL sell qty={pos.qty} ({REASON[state]} {level})",
-            detail=f"order={order_id}",
+            detail=detail,
             dates=f"FAST EXIT: live {state} (was due {pos.close_on})",
         )
         self.telegram.send(msg, dry_run=self.dry_run)
-        exit_px = None
-        try:
-            o = self.client.get_order_by_id(order_id)
-            o_status = str(getattr(o.status, "value", o.status)).lower()
-            if o_status == "filled" and o.filled_avg_price:
-                exit_px = float(o.filled_avg_price)
-        except Exception:
-            exit_px = None
-        from src.shadow import record_closed
-
-        rec = record_closed(
-            book, ticker, pos.bot_id, pos.signal_id, pos.enter_on,
-            pos.close_on, entry_px, exit_px,
-            datetime.now(timezone.utc).isoformat(),
-        )
-        rec["exit_reason"] = state
-        book.close_position(ticker)
+        if fill is None:
+            pos.pending_exit_order_id = str(order_id)
+            pos.pending_exit_reason = state
+            logger.info("exit_monitor: %s %s submitted %s, waiting for fill", ticker, state, order_id)
+            continue
+        price, filled_at = fill
+        book_confirmed_close(book, pos, entry_px, price, filled_at, state)
         logger.info("exit_monitor: %s %s sold (order %s)", ticker, state, order_id)

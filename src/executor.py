@@ -4,9 +4,20 @@ import logging
 from datetime import datetime, timezone
 from collections import defaultdict
 
-from src.alpaca import cancel_open_orders, get_equity, get_open_positions, get_trading_client, submit_buy, submit_sell
+from src.alpaca import (
+    cancel_open_orders,
+    get_equity,
+    get_open_positions,
+    get_position_entry_price,
+    get_position_qty,
+    get_trading_client,
+    market_is_open,
+    submit_buy,
+    submit_sell,
+)
 from src.book import Book, load_book, make_position, save_book
 from src.config import Settings, ensure_data_dirs
+from src.decision_log import log_decision, sell_decision
 from src.exit_monitor import run_exit_monitor
 from src.merge import MergedSignal, SkippedSignal, merge_signals
 from src.news import NewsItem, detect_news, summarize_health
@@ -14,6 +25,7 @@ from src.poll import PollResult, poll_all
 from src.registry import BotConfig, enabled_bots
 from src.risk import can_open_position, check_eligible, should_enter
 from src.research_feedback import feedback_report
+from src.reconcile import book_confirmed_close, read_sell_fill, reconcile_book, settle_pending_exit
 from src.shadow import bench_reason, record_closed
 from src.schedule import (
     is_eod_time,
@@ -74,6 +86,7 @@ class Executor:
             self._send_enter_today_notices(winners, book, today)
 
         winners, _ = merge_signals(results)
+        self._announce_reconcile(book)
         self._process_sells(book, today)
         run_exit_monitor(self, book)
         self._process_enters(winners, book, today)
@@ -266,89 +279,161 @@ class Executor:
             self.telegram.send(msg, dry_run=self.dry_run)
             book.mark_notice_sent(sig.id, label)
 
-    def _process_sells(self, book: Book, today: str) -> None:
-        to_close = [p for p in book.positions if is_sell_today(p.close_on)]
-        for pos in to_close:
-            entry_px = None
-            exit_px = None
-            if self.client:
-                try:
-                    from src.alpaca import get_position_entry_price
-                    entry_px = get_position_entry_price(self.client, pos.ticker)
-                except Exception:
-                    pass
-            order_id = "dry-run"
-            if self.client:
-                # Live-quantity guard + market-hours gate: never sell more than
-                # Alpaca holds, and only while the market is open. Fail closed.
-                from src.alpaca import get_position_qty, market_is_open
-                from src.decision_log import sell_decision, log_decision
+    def _announce_reconcile(self, book: Book) -> None:
+        """Book fills Alpaca already has, and alert once on positions the book does not know."""
+        if not self.client:
+            return
+        for event in reconcile_book(self.client, book):
+            if event.kind == "closed":
+                msg = format_message(
+                    kind="SELL",
+                    source=event.bot_name,
+                    signal_line=event.symbol,
+                    action=f"SELL booked on confirmed fill {event.fill_price}",
+                    detail=f"reconcile: Alpaca was already flat or short; fill time {event.fill_time}",
+                    dates=f"SELL: {event.close_on}" if event.close_on else "",
+                )
+                self.telegram.send(msg, dry_run=self.dry_run)
+                continue
+            label = f"{event.kind}:{event.qty}"
+            key = f"reconcile:{event.symbol}"
+            if book.notice_already_sent(key, label):
+                continue
+            headline = "UNEXPECTED SHORT" if event.kind == "unexpected_short" else "UNEXPECTED LONG"
+            msg = format_message(
+                kind="NEWS",
+                source="Brancher",
+                signal_line=event.symbol,
+                action=f"{headline} qty={event.qty}",
+                detail="Not adding it to the book and not trading it.",
+            )
+            self.telegram.send(msg, dry_run=self.dry_run)
+            book.mark_notice_sent(key, label)
 
-                avail = get_position_qty(self.client, pos.ticker)
-                mopen = market_is_open(self.client)
-                decision, reason = sell_decision(pos.qty, avail, mopen)
-                log_decision(pos.ticker, pos.qty, avail, mopen, decision, reason)
-                if decision == "skip-guard":
-                    logger.warning(
-                        "live-qty guard: %s skip sell (book qty=%s, live available=%s) — not selling",
-                        pos.ticker, pos.qty, avail,
-                    )
-                    continue
-                if decision == "skip-closed":
-                    logger.warning("market-hours gate: %s skip (closed/unknown)", pos.ticker)
-                    continue
-                sell_qty = min(pos.qty, avail)
-                try:
-                    order_id = submit_sell(self.client, pos.ticker, sell_qty)
-                except Exception as exc:
-                    # Wash-trade guard: an unfilled opposite-side order blocks the sell.
-                    # Cancel open orders for the symbol and retry once.
-                    if "wash trade" in str(exc) or "40310000" in str(exc):
-                        cancelled = cancel_open_orders(self.client, pos.ticker)
-                        if cancelled:
-                            try:
-                                order_id = submit_sell(self.client, pos.ticker, sell_qty)
-                                logger.info("Sell for %s succeeded after cancelling %d open order(s)", pos.ticker, cancelled)
-                            except Exception as exc2:
-                                logger.error("Sell retry failed for %s: %s", pos.ticker, exc2)
-                                continue
-                        else:
-                            logger.error("Sell failed for %s: %s", pos.ticker, exc)
-                            continue
-                    else:
-                        logger.error("Sell failed for %s: %s", pos.ticker, exc)
-                        continue
+    def _book_dry_run_sell(self, book: Book, pos) -> None:
+        msg = format_message(
+            kind="SELL",
+            source=pos.bot_name,
+            signal_line=f"{pos.ticker}",
+            action=f"SELL sell qty={pos.qty}",
+            detail="dry-run",
+            dates=f"SELL: {pos.close_on} next session",
+        )
+        self.telegram.send(msg, dry_run=self.dry_run)
+        record_closed(
+            book, pos.ticker, pos.bot_id, pos.signal_id, pos.enter_on,
+            pos.close_on, None, None, datetime.now(timezone.utc).isoformat(),
+        )
+        book.close_position(pos.ticker)
 
+    def _send_fill_booked(self, pos, price, filled_at, reason: str | None) -> None:
+        detail = f"fill time {filled_at}"
+        if reason:
+            detail = f"{reason}; {detail}"
+        msg = format_message(
+            kind="SELL",
+            source=pos.bot_name,
+            signal_line=f"{pos.ticker}",
+            action=f"SELL booked on confirmed fill {price}",
+            detail=detail,
+            dates=f"SELL: {pos.close_on} next session",
+        )
+        self.telegram.send(msg, dry_run=self.dry_run)
+
+    def _finish_live_sell(self, book: Book, pos, order_id: str, sell_qty: int, entry_px, reason: str) -> None:
+        """Record the close only when this order id is a confirmed sell fill."""
+        fill = read_sell_fill(self.client, order_id)
+        if fill is None:
+            pos.pending_exit_order_id = str(order_id)
+            pos.pending_exit_reason = reason
             msg = format_message(
                 kind="SELL",
                 source=pos.bot_name,
                 signal_line=f"{pos.ticker}",
-                action=f"SELL sell qty={pos.qty}",
-                detail=f"order={order_id}" if not self.dry_run else "dry-run",
+                action=f"SELL submitted qty={sell_qty}, booked when the fill is confirmed",
+                detail=f"order={order_id}",
                 dates=f"SELL: {pos.close_on} next session",
             )
             self.telegram.send(msg, dry_run=self.dry_run)
-            if self.client:
-                try:
-                    from alpaca.trading.requests import GetOrdersRequest
-                    from alpaca.trading.enums import QueryOrderStatus
-                    for o in self.client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[pos.ticker], limit=5)):
-                        if o.side.value == "sell" and o.filled_avg_price:
-                            exit_px = float(o.filled_avg_price)
-                            break
-                except Exception:
-                    exit_px = None
-            from src.shadow import record_closed
-            record_closed(book, pos.ticker, pos.bot_id, pos.signal_id, pos.enter_on,
-                          pos.close_on, entry_px, exit_px,
-                          datetime.now(timezone.utc).isoformat())
-            book.close_position(pos.ticker)
+            return
+        price, filled_at = fill
+        msg = format_message(
+            kind="SELL",
+            source=pos.bot_name,
+            signal_line=f"{pos.ticker}",
+            action=f"SELL sell qty={sell_qty}",
+            detail=f"order={order_id} fill={price}",
+            dates=f"SELL: {pos.close_on} next session",
+        )
+        self.telegram.send(msg, dry_run=self.dry_run)
+        book_confirmed_close(book, pos, entry_px, price, filled_at, reason)
+
+    def _process_sells(self, book: Book, today: str) -> None:
+        to_close = [p for p in book.positions if is_sell_today(p.close_on)]
+        for pos in to_close:
+            if self.client and pos.pending_exit_order_id:
+                settled = settle_pending_exit(self.client, book, pos)
+                if settled.state == "booked":
+                    self._send_fill_booked(pos, settled.price, settled.filled_at, settled.reason)
+                    continue
+                if settled.state == "working":
+                    log_decision(
+                        pos.ticker, pos.qty, None, None, "none",
+                        f"exit working {pos.pending_exit_order_id}",
+                    )
+                    continue
+            if not self.client:
+                self._book_dry_run_sell(book, pos)
+                continue
+
+            entry_px = None
+            try:
+                entry_px = get_position_entry_price(self.client, pos.ticker)
+            except Exception:
+                entry_px = None
+            if entry_px is not None:
+                pos.entry_px = entry_px
+
+            # Live-quantity guard + market-hours gate: never sell more than
+            # Alpaca holds, and only while the market is open. Fail closed.
+            avail = get_position_qty(self.client, pos.ticker)
+            mopen = market_is_open(self.client)
+            decision, reason = sell_decision(pos.qty, avail, mopen)
+            log_decision(pos.ticker, pos.qty, avail, mopen, decision, reason)
+            if decision == "skip-guard":
+                logger.warning(
+                    "live-qty guard: %s skip sell (book qty=%s, live available=%s) — not selling",
+                    pos.ticker, pos.qty, avail,
+                )
+                continue
+            if decision == "skip-closed":
+                logger.warning("market-hours gate: %s skip (closed/unknown)", pos.ticker)
+                continue
+            sell_qty = min(pos.qty, avail)
+            try:
+                order_id = submit_sell(self.client, pos.ticker, sell_qty)
+            except Exception as exc:
+                # Wash-trade guard: an unfilled opposite-side order blocks the sell.
+                # Cancel open orders for the symbol and retry once.
+                if "wash trade" in str(exc) or "40310000" in str(exc):
+                    cancelled = cancel_open_orders(self.client, pos.ticker)
+                    if cancelled:
+                        try:
+                            order_id = submit_sell(self.client, pos.ticker, sell_qty)
+                            logger.info("Sell for %s succeeded after cancelling %d open order(s)", pos.ticker, cancelled)
+                        except Exception as exc2:
+                            logger.error("Sell retry failed for %s: %s", pos.ticker, exc2)
+                            continue
+                    else:
+                        logger.error("Sell failed for %s: %s", pos.ticker, exc)
+                        continue
+                else:
+                    logger.error("Sell failed for %s: %s", pos.ticker, exc)
+                    continue
+            self._finish_live_sell(book, pos, order_id, sell_qty, entry_px, "date")
 
         # Per-cycle decision log: one "none" line for book positions not sell-due.
         if self.client:
-            from src.alpaca import get_position_qty, market_is_open
-            from src.decision_log import log_decision
-
             for p in book.positions:
                 if not is_sell_today(p.close_on):
                     log_decision(p.ticker, p.qty, get_position_qty(self.client, p.ticker),

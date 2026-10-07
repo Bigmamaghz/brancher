@@ -23,6 +23,9 @@ class FakeOrder:
     def __init__(self, status, filled_avg_price):
         self.status = status
         self.filled_avg_price = filled_avg_price
+        self.filled_at = "2026-09-30T14:45:00+00:00"
+        self.filled_qty = 12
+        self.id = "oid-eqt"
 
 
 class FakeClient:

@@ -74,6 +74,16 @@ class MockClient:
             self.cancelled.append(oid)
             del self.open[oid]
 
+    def get_order_by_id(self, oid):
+        class O:
+            status = "filled"
+            filled_avg_price = 10.0
+            filled_at = "2026-09-29T15:00:00+00:00"
+            filled_qty = 10
+            side = "sell"
+            id = oid
+        return O()
+
     def still_open(self, oid: str) -> bool:
         return oid in self.open
 
