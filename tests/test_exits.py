@@ -263,6 +263,39 @@ def test_close_booked_only_after_fill(executor, shadow_path, caplog):
     assert book.closed[0]["closed_at"] == FILL_TIME
 
 
+def test_working_exit_is_not_submitted_again(executor, shadow_path):
+    """A DAY sell that has not filled must not be stacked on the next cycle."""
+    bot, fake = executor
+    fake.positions.append(_broker_position("DTE", 5, avg="70"))
+    book = Book(positions=[_position("DTE", 5)])
+
+    _run_exit(bot, book)
+    _run_exit(bot, book)
+
+    assert len(fake.submitted) == 1
+    assert book.closed == []
+    assert book.positions[0].pending_exit_order_id == "submitted-1"
+    assert "submitted-1" not in fake.cancelled
+
+
+def test_run_cycle_reconciles_a_stop_before_the_exit_date(executor, shadow_path, monkeypatch):
+    bot, fake = executor
+    fake.orders.append(
+        _order("stop-cl", "CL", status="filled", qty=23, price="84.20", filled_at=STOP_TIME)
+    )
+    book = Book(positions=[_position("CL", 23, close_on="2026-12-01")])
+    monkeypatch.setattr("src.executor.load_book", lambda: book)
+    monkeypatch.setattr("src.executor.save_book", lambda _book: None)
+    monkeypatch.setattr("src.executor.enabled_bots", lambda: [])
+
+    bot.run_cycle()
+
+    assert fake.submitted == []
+    assert book.positions == []
+    assert book.closed[0]["exit_px"] == 84.20
+    assert book.closed[0]["closed_at"] == STOP_TIME
+
+
 def test_same_cycle_fill_uses_fill_price(executor, shadow_path):
     bot, fake = executor
     fake.fill_on_submit = ("55.25", FILL_TIME)
