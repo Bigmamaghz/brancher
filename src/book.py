@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,10 +19,15 @@ class Position:
     enter_on: str
     close_on: str
     opened_at: str
+    # Set while a timed exit is working so the next cycle does not sell again.
+    pending_exit_order_id: str | None = None
+    # Captured from Alpaca while the long is still open, for the later fill.
+    entry_px: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Position:
-        return cls(**d)
+        known = {item.name for item in fields(cls)}
+        return cls(**{key: value for key, value in d.items() if key in known})
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
