@@ -12,6 +12,7 @@ Standalone:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import src.executor as ex
@@ -31,6 +32,9 @@ def _settings() -> Settings:
         max_open_positions=10, max_opens_per_day=5, min_hit=0.75, min_n=30,
         telegram_news_only=True, telegram_eod=False, telegram_trades_only=False,
         joe_veto=False,
+        pattern_inventory_path=str(
+            Path(__file__).resolve().parent / "fixtures" / "legacy_entry_inventory.md"
+        ),
     )
 
 

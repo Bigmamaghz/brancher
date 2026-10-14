@@ -23,6 +23,8 @@ from src.schedule import (
     today_et_str,
 )
 from src.sizing import qty_for_hit
+from src.decision_log import log_entry_decision
+from src.joe_gate import joe_check, signal_pattern
 from src.levels import atr_at_entry, freeze_levels
 from src.telegram import TelegramClient, format_dates, format_message, format_signal_line
 
@@ -407,26 +409,36 @@ class Executor:
             if not should_enter(merged, today):
                 continue
 
-            # joe's gate (paper veto) — only reached after every hard rule passed.
-            # joe is research-only: he never orders, never texts. Infra failure
-            # inside joe_check fails open; the stack never stalls on joe.
-            if self.settings.joe_veto:
-                from src.joe_gate import joe_check
-                allow, jreason = joe_check(sig)
-                if not allow:
-                    logger.info("joe veto %s: %s", sig.id, jreason)
-                    if not self.settings.telegram_news_only:
-                        self._send_skip_once(merged, book, f"joe: {jreason}")
-                    continue
-
+            # Cap before Joe. MAX_OPENS_PER_DAY=0 must not consult Joe at all.
             cap_reason = can_open_position(
                 len(book.positions),
                 book.opens_today_count(today),
                 self.settings,
             )
             if cap_reason:
+                if self.settings.joe_veto:
+                    log_entry_decision(
+                        ticker=sig.ticker,
+                        pattern=signal_pattern(sig),
+                        inventory_status="not-checked",
+                        joe_ok="",
+                        joe_verdict="",
+                        joe_source_count="",
+                        latency_s="",
+                        action="no-entry",
+                        reason=cap_reason,
+                        path=self.settings.entry_decision_log or None,
+                    )
                 if not self.settings.telegram_news_only:
                     self._send_skip_once(merged, book, cap_reason)
+                continue
+
+            # Inventory always runs. JOE_VETO=0 skips only the consult inside joe_check.
+            allow, jreason = joe_check(sig, settings=self.settings)
+            if not allow:
+                logger.info("joe gate blocked %s: %s", sig.id, jreason)
+                if not self.settings.telegram_news_only:
+                    self._send_skip_once(merged, book, f"joe: {jreason}")
                 continue
 
             qty = qty_for_hit(

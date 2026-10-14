@@ -9,6 +9,7 @@ import time
 from src.auth import generate_api_key
 from src.config import LOOP_INTERVAL_SEC, load_settings
 from src.executor import Executor
+from src.joe_gate import start_joe_self_check
 from src.poll import poll_all
 from src.registry import enabled_bots
 from src.telegram import TelegramClient
@@ -135,6 +136,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     settings = load_settings()
+    start_joe_self_check(settings.joe_consult_dir)
     executor = Executor(settings, dry_run=args.dry_run)
 
     if args.once:
