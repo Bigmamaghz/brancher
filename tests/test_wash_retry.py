@@ -10,7 +10,8 @@ Assertions (per request):
   (3) a second reject does not loop (no further retries)
 
 The retry calls the REAL src.alpaca.cancel_open_orders (not a stub), so this
-test reflects production behaviour: it cancels every OPEN order for the symbol.
+test reflects production behaviour: it cancels only open MARKET orders for the
+symbol (protective STOP / STOP_LIMIT / LIMIT / TRAILING_STOP are never touched).
 
 Runnable two ways:
   pytest tests/test_wash_retry.py
@@ -35,7 +36,7 @@ TODAY = "2026-09-29"
 # Mock Alpaca surface
 # --------------------------------------------------------------------------- #
 class MockOrder:
-    """Minimal order object; real cancel_open_orders only reads .id."""
+    """Minimal order object; cancel_open_orders reads .id and .order_type."""
 
     def __init__(self, oid: str, side: str, order_type: str):
         self.id = oid
@@ -269,7 +270,12 @@ def test_sell_retries_exactly_once(tmp_path):
 
 
 def test_sell_retry_does_not_cancel_protective_stop(tmp_path):
-    """(2) sell-side: a resting protective stop must survive the retry."""
+    """(2) sell-side: wash-retry cancel_open_orders must not cancel a protective stop.
+
+    exit_monitor intentionally clears resting stops before a manual sell
+    (see test_exit_cancel_stop). Stub that path out here so only the wash-retry
+    cancel_open_orders behaviour is under test.
+    """
     client = MockClient([
         MockOrder("protected-stop-1", "sell", "stop"),
         MockOrder("stale-buy-1", "buy", "market"),
@@ -282,10 +288,12 @@ def test_sell_retry_does_not_cancel_protective_stop(tmp_path):
 
     with patch.object(em, "WATCHERS_PATH", _write_at_sl(tmp_path)), \
          patch.object(em, "get_position_entry_price", lambda c, t: 10.0), \
+         patch.object(em, "open_stop_orders", return_value=[]), \
          patch.object(em, "submit_sell", side_effect=fake_sell), \
          patch("src.shadow.record_closed", lambda *a, **k: {}):
         em.run_exit_monitor(holder, book)
 
+    assert "stale-buy-1" in client.cancelled
     assert client.still_open("protected-stop-1"), (
         "PROTECTIVE STOP WAS CANCELLED by cancel_open_orders: "
         f"cancelled={client.cancelled}"
