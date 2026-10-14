@@ -35,6 +35,16 @@ class FakeClient:
                 self.avg_entry_price = 10.0
         return [P(t, self._avail) for t in ("AAA", "BBB", "CCC")]
 
+    def get_order_by_id(self, order_id):
+        class O:
+            status = "filled"
+            filled_avg_price = 10.0
+            filled_at = "2026-09-30T15:00:00+00:00"
+            filled_qty = 10
+            side = "sell"
+            id = order_id
+        return O()
+
 
 def _book_with(ticker, qty=10):
     book = Book()

@@ -63,7 +63,8 @@ def cancel_open_orders(client, symbol: str) -> int:
             otype = str(otype).lower()
             if otype != "market":
                 continue  # never cancel protective (stop/stop_limit/limit/trailing_stop)
-            client.cancel_order(o.id)
+            # alpaca-py >=0.35: cancel_order_by_id (there is no client.cancel_order)
+            client.cancel_order_by_id(o.id)
             n += 1
     except Exception:
         pass
@@ -142,7 +143,8 @@ def cancel_order_by_id(client, order_id) -> bool:
     stop before selling. cancel_open_orders() stays market-only and untouched.
     """
     try:
-        client.cancel_order(order_id)
+        # alpaca-py >=0.35: cancel_order_by_id (there is no client.cancel_order)
+        client.cancel_order_by_id(order_id)
         return True
     except Exception:
         return False

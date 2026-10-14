@@ -84,7 +84,7 @@ class MockClient:
     def get_orders(self, filter=None):
         return []
 
-    def cancel_order(self, oid):
+    def cancel_order_by_id(self, oid):
         pass
 
     def get_order_by_id(self, oid):

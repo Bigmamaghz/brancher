@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,10 +23,16 @@ class Position:
     stop: float | None = None
     target: float | None = None
     atr_at_entry: float | None = None
+    # Set when an exit order is working. The book stays open until that order fills.
+    pending_exit_order_id: str | None = None
+    pending_exit_reason: str | None = None
+    # Avg entry captured while the long was still open, for a later fill booking.
+    entry_px: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Position:
-        return cls(**d)
+        known = {item.name for item in fields(cls)}
+        return cls(**{key: value for key, value in d.items() if key in known})
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

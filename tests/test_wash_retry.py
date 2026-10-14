@@ -43,7 +43,7 @@ class MockOrder:
 
 
 class MockClient:
-    """Tracks open orders. cancel_order() records + removes them (like Alpaca)."""
+    """Tracks open orders. cancel_order_by_id() records + removes them (like Alpaca)."""
 
     def __init__(self, orders: list[MockOrder]):
         self.open = {o.id: o for o in orders}
@@ -69,10 +69,20 @@ class MockClient:
                 self.avg_entry_price = 100.0
         return [P("ZZZ", 10)]
 
-    def cancel_order(self, oid):
+    def cancel_order_by_id(self, oid):
         if oid in self.open:
             self.cancelled.append(oid)
             del self.open[oid]
+
+    def get_order_by_id(self, oid):
+        class O:
+            status = "filled"
+            filled_avg_price = 10.0
+            filled_at = "2026-09-29T15:00:00+00:00"
+            filled_qty = 10
+            side = "sell"
+            id = oid
+        return O()
 
     def still_open(self, oid: str) -> bool:
         return oid in self.open
