@@ -54,7 +54,7 @@ class FakeClient:
                 self.avg_entry_price = 50.09
         return [P("EQT", 12)]
 
-    def cancel_order(self, order_id):
+    def cancel_order_by_id(self, order_id):
         if not self._cancel_ok:
             raise RuntimeError("cancel rejected")
         self.cancelled.append(order_id)
